@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # ============================================================
+  # FastAPI Application (the Lead Management AI Worker)
+  # ============================================================
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lead_agent_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override to use Docker internal hostnames instead of localhost
+      - DATABASE_URL=postgresql://agentuser:agentpassword@db:5432/leadagentdb
+      - REDIS_URL=redis://redis:6379/0
+    healthcheck:
+      # Ensures the container is marked healthy only when FastAPI is actually responding
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      db:
+        condition: service_healthy  # Wait for Postgres to be fully ready
+      redis:
+        condition: service_healthy  # Wait for Redis to be fully ready
+    networks:
+      - agent_network
+
+  # ============================================================
+  # PostgreSQL Database (Persistent Storage + Audit Logs)
+  # ============================================================
+  db:
+    image: postgres:15-alpine
+    container_name: lead_agent_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=agentuser
+      - POSTGRES_PASSWORD=agentpassword
+      - POSTGRES_DB=leadagentdb
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named volume ensures data survives container rebuilds
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready checks that Postgres is accepting connections
+      test: ["CMD-SHELL", "pg_isready -U agentuser -d leadagentdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agent_network
+
+  # ============================================================
+  # Redis (LangGraph Workflow Checkpointing)
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: lead_agent_redis
+    restart: unless-stopped
+    # --appendonly yes = enables AOF persistence so checkpoints survive restarts
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agent_network
+
+# Named volumes persist data across container lifecycle events
+volumes:
+  pg_data:
+  redis_data:
+
+# Isolated bridge network prevents unintended access from other Docker projects
+networks:
+  agent_network:
+    driver: bridge

@@ -1,0 +1,36 @@
+# ── Python ────────────────────────────────────────────────────
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Databases / secrets ───────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+.env
+
+# ── Build artefacts ───────────────────────────────────────────
+*.egg-info/
+dist/
+build/
+
+# ── Frontend ──────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── OS / editor ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# .env.example is intentionally tracked — do NOT ignore it
