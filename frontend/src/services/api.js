@@ -1,4 +1,6 @@
-const API_BASE = 'http://localhost:8000';
+// VITE_API_URL is baked in at build time (see frontend/.env.example). Falls back
+// to localhost for local `npm run dev` against a locally running backend.
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export function parseJwt(token) {
   try {

@@ -51,22 +51,21 @@ ENV PYTHONUNBUFFERED=1
 # Copy the application source code
 COPY . .
 
+# Make the entrypoint executable
+RUN chmod +x docker-entrypoint.sh
+
 # Change ownership so the non-root user can read files
 RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
 
-# Expose FastAPI port
+# Expose FastAPI port (default; actual bind port follows $PORT if the host sets one)
 EXPOSE 8000
 
 # Run with Gunicorn + Uvicorn workers for production stability.
 # -w 4 = 4 worker processes (adjust based on CPU cores: 2 * cores + 1)
 # -k uvicorn.workers.UvicornWorker = use async workers
-CMD ["gunicorn", "app.main:app", \
-     "-w", "4", \
-     "-k", "uvicorn.workers.UvicornWorker", \
-     "--bind", "0.0.0.0:8000", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-", \
-     "--timeout", "120"]
+# See docker-entrypoint.sh: binds to $PORT if the host injects one (Render,
+# Cloud Run, etc.), otherwise defaults to 8000 (docker-compose / local runs).
+CMD ["/app/docker-entrypoint.sh"]
