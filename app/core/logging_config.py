@@ -40,6 +40,18 @@ def setup_logging() -> None:
     # Remove the default plain-text handler
     logger.remove()
 
+    # Make the log stream encoding-safe. Loguru serializes JSON with
+    # ensure_ascii=False, so records containing non-ASCII (level icons, ₹, names)
+    # would raise UnicodeEncodeError on a legacy console (e.g. Windows cp1252) and
+    # spam "Logging error in Handler". UTF-8 with a backslash fallback prevents that
+    # on every platform; production (Linux/Docker) is already UTF-8.
+    _reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if _reconfigure is not None:
+        try:
+            _reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError):  # non-reconfigurable stream (rare)
+            pass
+
     # Add structured JSON handler to stdout
     logger.add(
         sys.stdout,
