@@ -1,0 +1,10 @@
+{
+  "case": "company_at_max_length_boundary",
+  "kind": "api",
+  "known_issue": false,
+  "note": "company max_length=200 is INCLUSIVE \u2014 exactly 200 characters is accepted (202).",
+  "output": {
+    "http_status": 202,
+    "detail": null
+  }
+}

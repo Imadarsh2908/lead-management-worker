@@ -1,0 +1,15 @@
+{
+  "case": "budget_just_above_threshold",
+  "kind": "engine",
+  "known_issue": false,
+  "note": "One unit above the threshold crosses into HIGH \u2014 confirms the boundary is exclusive.",
+  "output": {
+    "priority": "HIGH",
+    "assigned_queue": "GENERAL_SALES",
+    "action": "generate_follow_up",
+    "halt_execution": false,
+    "reasoning": [
+      "Budget \u20b9500,001 exceeds the \u20b9500,000 threshold \u2192 High Priority."
+    ]
+  }
+}

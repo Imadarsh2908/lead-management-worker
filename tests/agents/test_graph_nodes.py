@@ -17,7 +17,7 @@ from app.agents.graph import (
     node_audit,
     process_lead,
 )
-from app.models.lead import Lead, WorkflowState, WorkflowStatus
+from app.models.lead import Lead, WorkflowState, WorkflowStatus, AuditLog, AuditActionType
 
 
 def test_node_receive_lead():
@@ -52,15 +52,57 @@ def test_node_validate_failure():
     assert "Missing required field" in res["validation_errors"][0]
 
 
-def test_node_crm_lookup():
+def test_node_crm_lookup_new_lead(db_session):
+    """A lead whose email matches no OTHER lead is treated as new (exists_in_crm=False)."""
+    lead_id = uuid.uuid4()
+    db_session.add(Lead(id=lead_id, email="onlyme@domain.com"))
+    db_session.commit()
+
+    state = AgentState(
+        lead_id=lead_id,
+        workflow_id=uuid.uuid4(),
+        memory={"email": "onlyme@domain.com"},
+    )
+    with patch("app.core.database.engine", db_session.bind):
+        res = node_crm_lookup(state)
+
+    assert res["current_step"] == "crm_lookup"
+    # Only match is the lead itself, which is excluded → not a duplicate.
+    assert res["memory"]["exists_in_crm"] is False
+
+
+def test_node_crm_lookup_existing_lead(db_session):
+    """If another lead already has this email, exists_in_crm must be True."""
+    existing_id = uuid.uuid4()
+    current_id = uuid.uuid4()
+    db_session.add(Lead(id=existing_id, email="dup@domain.com"))
+    db_session.commit()
+
+    state = AgentState(
+        lead_id=current_id,
+        workflow_id=uuid.uuid4(),
+        memory={"email": "dup@domain.com"},
+    )
+    with patch("app.core.database.engine", db_session.bind):
+        res = node_crm_lookup(state)
+
+    assert res["memory"]["exists_in_crm"] is True
+
+
+def test_node_crm_lookup_db_error_degrades():
+    """On a DB error the node degrades gracefully: exists_in_crm=False + audit warning."""
     state = AgentState(
         lead_id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),
-        memory={"email": "test@domain.com"}
+        memory={"email": "boom@domain.com"},
     )
-    res = node_crm_lookup(state)
-    assert res["current_step"] == "crm_lookup"
+    # Force the Session context manager to raise. node_crm_lookup imports Session
+    # lazily from sqlalchemy.orm, so we patch it at the source.
+    with patch("sqlalchemy.orm.Session", side_effect=RuntimeError("DB down")):
+        res = node_crm_lookup(state)
+
     assert res["memory"]["exists_in_crm"] is False
+    assert any("degraded" in log.message.lower() for log in res["audit_logs"])
 
 
 @patch("app.agents.graph.safe_enrich_domain")
@@ -94,9 +136,48 @@ def test_node_enrichment_no_email():
     res = node_enrichment(state)
     assert res["status"] == "ENRICHING"
     assert res["memory"]["enrichment"]["enrichment_failed"] is True
+    # Failure bumps the dedicated enrichment counter (not the general retry_count).
+    assert res["enrichment_retry_count"] == 1
+
+
+@patch("app.agents.graph.safe_enrich_domain")
+def test_node_enrichment_failure_increments_dedicated_counter(mock_safe_enrich):
+    """A failed enrichment increments enrichment_retry_count and leaves retry_count alone."""
+    mock_safe_enrich.return_value = {"company_name": None, "enrichment_failed": True}
+    state = AgentState(
+        lead_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        retry_count=1,
+        enrichment_retry_count=1,
+        memory={"email": "user@domain.com"},
+    )
+    res = node_enrichment(state)
+    assert res["enrichment_retry_count"] == 2      # bumped
+    assert "retry_count" not in res                # general breaker untouched
+
+
+@patch("app.agents.graph.safe_enrich_domain")
+def test_node_enrichment_success_does_not_increment_counter(mock_safe_enrich):
+    """A successful enrichment must not increment enrichment_retry_count."""
+    mock_safe_enrich.return_value = {"company_name": "Acme", "enrichment_failed": False}
+    state = AgentState(
+        lead_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        enrichment_retry_count=2,
+        memory={"email": "user@domain.com"},
+    )
+    res = node_enrichment(state)
+    assert res["enrichment_retry_count"] == 2      # unchanged
 
 
 def test_node_lead_score():
+    """LLM HIGH verdict on a genuinely high-value lead propagates unchanged."""
+    from app.agents.llm_scorer import ScoringResult
+
+    llm_result = ScoringResult(
+        priority="HIGH", confidence=0.9, next_action="generate_follow_up",
+        reasoning=["High budget", "CEO decision maker"], source="llm",
+    )
     state = AgentState(
         lead_id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),
@@ -107,12 +188,75 @@ def test_node_lead_score():
             "enrichment": {"company_size": "Enterprise", "is_freemail": False}
         }
     )
-    res = node_lead_score(state)
+    with patch("app.agents.graph.score_lead", return_value=llm_result):
+        res = node_lead_score(state)
+
     assert res["status"] == "ANALYZING"
     assert res["current_step"] == "lead_score"
     assert res["priority"] == "HIGH"
-    assert res["confidence"] == 0.88
-    assert res["next_action"] == "PROCEED"
+    assert res["confidence"] == 0.9           # LLM confidence propagates (no more hardcoded 0.88)
+    assert res["next_action"] == "generate_follow_up"
+    # The full LLM exchange is captured as an auditable tool call.
+    tool_names = [t.tool_name for t in res["tool_history"]]
+    assert "llm_score_lead" in tool_names
+
+
+def test_node_lead_score_guardrail_downgrades_freemail():
+    """LLM says HIGH for a freemail lead → rule guardrail downgrades to LOW with an override audit."""
+    from app.agents.llm_scorer import ScoringResult
+
+    llm_result = ScoringResult(
+        priority="HIGH", confidence=0.95, next_action="generate_follow_up",
+        reasoning=["Model over-scored this one"], source="llm",
+    )
+    state = AgentState(
+        lead_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        memory={
+            "email": "user@gmail.com",
+            "budget": 0.0,
+            "job_title": "",
+            "enrichment": {"is_freemail": True},
+        },
+    )
+    with patch("app.agents.graph.score_lead", return_value=llm_result):
+        res = node_lead_score(state)
+
+    # Guardrail may only make it stricter: HIGH → LOW, action follow_up → notify.
+    assert res["priority"] == "LOW"
+    assert res["next_action"] == "notify"
+    override_entries = [l for l in res["audit_logs"] if l.action_type == "GUARDRAIL_OVERRIDE"]
+    assert len(override_entries) >= 1
+    assert override_entries[0].metadata["before"] == "HIGH"
+    assert override_entries[0].metadata["after"] == "LOW"
+
+
+def test_node_lead_score_fallback_escalates():
+    """A rules_fallback (confidence 0.50) forces escalation via the guardrail + gate."""
+    from app.agents.llm_scorer import ScoringResult
+    from app.agents.graph import route_after_decision
+
+    fallback = ScoringResult(
+        priority="MEDIUM", confidence=0.50, next_action="notify",
+        reasoning=["Rule-based fallback (llm down)."], source="rules_fallback",
+    )
+    state = AgentState(
+        lead_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        memory={"email": "user@corp.com", "budget": 50000.0, "job_title": "Manager"},
+    )
+    with patch("app.agents.graph.score_lead", return_value=fallback):
+        res = node_lead_score(state)
+
+    assert res["confidence"] == 0.50
+    # Low confidence trips the rule engine's LowConfidenceRule → forced escalate.
+    assert res["next_action"] == "ESCALATE"
+    # And the downstream router escalates on the 0.50 confidence gate too.
+    routed = route_after_decision(AgentState(
+        lead_id=uuid.uuid4(), workflow_id=uuid.uuid4(),
+        confidence=res["confidence"], next_action=res["next_action"],
+    ))
+    assert routed == "escalate"
 
 
 def test_node_decision():
@@ -219,6 +363,63 @@ def test_node_audit(db_session):
     assert db_wf.current_status == WorkflowStatus.COMPLETED
 
 
+def test_node_audit_persists_tool_io(db_session):
+    """node_audit must write one AuditLog row per ToolCallRecord with tool I/O populated."""
+    lead_id = uuid.uuid4()
+    db_session.add_all([
+        Lead(id=lead_id, email="tools@test.com"),
+        WorkflowState(lead_id=lead_id, current_status=WorkflowStatus.RECEIVED),
+    ])
+    db_session.commit()
+
+    state = AgentState(
+        lead_id=lead_id,
+        workflow_id=uuid.uuid4(),
+        status="COMPLETED",
+        priority="MEDIUM",
+        confidence=0.9,
+        tool_history=[
+            ToolCallRecord(
+                tool_name="enrich_lead_domain",
+                inputs={"email": "tools@test.com"},
+                outputs={"company_size": "SMB", "enrichment_failed": False},
+                success=True,
+            ),
+            ToolCallRecord(
+                tool_name="send_slack_notification",
+                inputs={"lead_id": str(lead_id)},
+                outputs={"status": "sent"},
+                success=True,
+            ),
+        ],
+        audit_logs=[
+            AuditLogEntry(action_type="STATE_TRANSITION", message="reasoning row", metadata={}),
+        ],
+    )
+
+    with patch("app.core.database.engine", db_session.bind):
+        node_audit(state)
+
+    db_session.expire_all()
+    tool_rows = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.lead_id == lead_id)
+        .filter(AuditLog.action_type == AuditActionType.TOOL_INVOCATION)
+        .all()
+    )
+    # One row per ToolCallRecord.
+    assert len(tool_rows) == 2
+
+    by_input = {row.tool_inputs.get("email") or row.tool_inputs.get("lead_id"): row for row in tool_rows}
+    enrich_row = by_input["tools@test.com"]
+    assert enrich_row.tool_inputs == {"email": "tools@test.com"}
+    assert enrich_row.tool_outputs["company_size"] == "SMB"
+    assert enrich_row.llm_reasoning["tool_name"] == "enrich_lead_domain"
+
+    slack_row = by_input[str(lead_id)]
+    assert slack_row.tool_outputs == {"status": "sent"}
+
+
 @patch("app.core.logging_config.set_correlation_id")
 def test_process_lead(mock_correlate, db_session):
     lead_id = uuid.uuid4()
@@ -227,11 +428,37 @@ def test_process_lead(mock_correlate, db_session):
     db_session.add_all([lead, wf_state])
     db_session.commit()
 
-    # process_lead build graph and calls stream.
-    # We patch langgraph compile to mock building the graph or run with InMemorySaver checkpointer
-    # to avoid needing Redis during test execution.
+    # process_lead builds (once) the compiled graph and streams it.
+    # We run with an in-memory checkpointer to avoid needing Redis, patch the DB
+    # engine to the test SQLite DB, and stub enrichment to SUCCEED so the workflow
+    # takes the happy path instead of the (now-wired) retry loop hitting real HTTP.
     from langgraph.checkpoint.memory import MemorySaver
-    from app.agents.graph import build_graph
+    from app.agents.llm_scorer import ScoringResult
+    import app.agents.graph as graph_module
 
-    with patch("app.core.memory.get_checkpointer", return_value=MemorySaver()), patch("app.core.database.engine", db_session.bind):
+    successful_enrichment = {
+        "company_name": "Process Corp",
+        "industry": "Tech",
+        "company_size": "SMB",
+        "is_freemail": False,
+        "enrichment_failed": False,
+    }
+    # Stub the LLM so the scoring node stays hermetic (no network).
+    llm_result = ScoringResult(
+        priority="MEDIUM", confidence=0.82, next_action="notify",
+        reasoning=["stubbed"], source="llm",
+    )
+
+    # Reset the compiled-graph singleton so this test builds a fresh graph that
+    # picks up the patched checkpointer rather than reusing one from another test.
+    graph_module._compiled_graph = None
+
+    with patch("app.core.memory.get_checkpointer", return_value=MemorySaver()), \
+         patch("app.agents.graph.get_checkpointer", return_value=MemorySaver()), \
+         patch("app.agents.graph.safe_enrich_domain", return_value=successful_enrichment), \
+         patch("app.agents.graph.score_lead", return_value=llm_result), \
+         patch("app.core.database.engine", db_session.bind):
         process_lead(str(lead_id), str(uuid.uuid4()), {"email": "process@test.com", "phone": "+123"})
+
+    # Clean up the singleton so a graph bound to test patches doesn't leak.
+    graph_module._compiled_graph = None

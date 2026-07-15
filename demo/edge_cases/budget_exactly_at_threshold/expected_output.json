@@ -1,0 +1,15 @@
+{
+  "case": "budget_exactly_at_threshold",
+  "kind": "engine",
+  "known_issue": false,
+  "note": "policy.decision.high_budget_threshold is a STRICT '>' comparison. Budget == 500000 does NOT qualify for HIGH.",
+  "output": {
+    "priority": "MEDIUM",
+    "assigned_queue": "GENERAL_SALES",
+    "action": "notify",
+    "halt_execution": false,
+    "reasoning": [
+      "No specific priority rules matched \u2192 defaulting to Medium."
+    ]
+  }
+}

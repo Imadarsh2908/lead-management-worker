@@ -1,0 +1,10 @@
+{
+  "case": "malformed_email_rejected",
+  "kind": "api",
+  "known_issue": false,
+  "note": "EmailStr correctly rejects a non-email string with 422.",
+  "output": {
+    "http_status": 422,
+    "detail": "value is not a valid email address: An email address must have an @-sign."
+  }
+}

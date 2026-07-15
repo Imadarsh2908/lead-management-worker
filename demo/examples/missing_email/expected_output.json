@@ -1,0 +1,21 @@
+{
+  "scenario": "missing_email",
+  "final_status": "ESCALATED",
+  "audit": [
+    {
+      "action_type": "STATE_TRANSITION",
+      "message": "Lead ingested and workflow started.",
+      "confidence": 0.0
+    },
+    {
+      "action_type": "STATE_TRANSITION",
+      "message": "Validation complete. Errors: ['Missing required field: email']",
+      "confidence": 0.0
+    },
+    {
+      "action_type": "ESCALATION",
+      "message": "Lead escalated to human agent for manual review.",
+      "confidence": 0.0
+    }
+  ]
+}

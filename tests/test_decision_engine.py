@@ -55,7 +55,8 @@ class TestDecisionEngine:
         decision = self.engine.process_lead(context)
 
         assert decision.priority == "HIGH"
-        assert decision.action == "PROCEED"
+        # HIGH priority → personalized follow-up (was the unreachable "PROCEED" default).
+        assert decision.action == "generate_follow_up"
         assert decision.halt_execution is False
 
     def test_decision_maker_routes_to_senior_sales(self):
@@ -82,6 +83,22 @@ class TestDecisionEngine:
         decision = self.engine.process_lead(context)
 
         assert decision.priority == "LOW"
+        # LOW priority → notify only, no personalized follow-up draft.
+        assert decision.action == "notify"
+
+    def test_medium_priority_lead_notifies(self):
+        """A lead with no matching priority rule defaults to MEDIUM → notify."""
+        context = LeadContext(
+            email="person@company.com",
+            budget=10_000,        # Below the 5L HIGH threshold
+            job_title="Analyst",  # Not a decision maker
+            ai_confidence=0.95,
+        )
+        decision = self.engine.process_lead(context)
+
+        assert decision.priority == "MEDIUM"
+        assert decision.action == "notify"
+        assert decision.halt_execution is False
 
     def test_high_budget_and_decision_maker_combined(self):
         """High budget + decision maker = HIGH priority + Senior Sales queue."""
@@ -95,4 +112,5 @@ class TestDecisionEngine:
 
         assert decision.priority == "HIGH"
         assert decision.assigned_queue == "SENIOR_SALES"
-        assert decision.action == "PROCEED"
+        # HIGH priority + Senior Sales → personalized follow-up.
+        assert decision.action == "generate_follow_up"

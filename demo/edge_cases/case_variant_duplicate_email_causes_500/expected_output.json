@@ -1,0 +1,14 @@
+{
+  "case": "case_variant_duplicate_email_causes_500",
+  "kind": "api",
+  "known_issue": true,
+  "note": "KNOWN BUG: submitting the same email in a different case bypasses the case-sensitive app-level dedup check. The row is stored lowercased (Lead.validate_email), so the DB's UNIQUE constraint DOES still catch the true duplicate \u2014 but only after the INSERT is attempted, so the client receives an unhandled 500 Internal Server Error instead of the intended clean 409 Conflict that a same-case resubmission gets.",
+  "output": {
+    "first_submit_http_status": 202,
+    "second_submit_http_status": 500,
+    "second_submit_body": {
+      "error": "Internal server error",
+      "detail": "An unexpected error occurred. It has been logged."
+    }
+  }
+}

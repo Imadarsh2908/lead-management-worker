@@ -1,0 +1,10 @@
+{
+  "case": "minimal_payload_only_email",
+  "kind": "api",
+  "known_issue": false,
+  "note": "Every field except email is optional \u2014 a bare {'email': ...} payload is accepted (202).",
+  "output": {
+    "http_status": 202,
+    "detail": null
+  }
+}

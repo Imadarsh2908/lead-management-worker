@@ -1,0 +1,10 @@
+{
+  "case": "company_over_max_length",
+  "kind": "api",
+  "known_issue": false,
+  "note": "201 characters (one over the limit) is correctly rejected with 422.",
+  "output": {
+    "http_status": 422,
+    "detail": "String should have at most 200 characters"
+  }
+}

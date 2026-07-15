@@ -1,0 +1,15 @@
+{
+  "case": "negative_budget_not_validated_internally",
+  "kind": "engine",
+  "known_issue": true,
+  "note": "KNOWN GAP (defense-in-depth): LeadContext.budget has no ge=0 constraint (unlike the API's LeadCreateRequest, which DOES reject negative budgets with 422 \u2014 see the 'negative_budget_rejected' API-level case). If any future caller builds a LeadContext directly without going through the API schema, a negative budget is silently accepted.",
+  "output": {
+    "priority": "MEDIUM",
+    "assigned_queue": "GENERAL_SALES",
+    "action": "notify",
+    "halt_execution": false,
+    "reasoning": [
+      "No specific priority rules matched \u2192 defaulting to Medium."
+    ]
+  }
+}

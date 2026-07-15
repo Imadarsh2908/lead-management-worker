@@ -3,6 +3,10 @@ app/agents/decision_engine.py
 ------------------------------
 Rule-based decision engine that determines the priority and next action for a lead.
 
+Behavioral source of truth: SOUL.md (principles) + config/policy.yaml (the exact
+numbers these rules enforce). All thresholds/lists are read from get_policy() —
+do NOT hardcode business constants here.
+
 Architecture: Strategy / Chain of Responsibility Pattern
   Each business rule is an isolated class.
   - New rules are added by creating a new class — existing code is NEVER modified.
@@ -17,6 +21,8 @@ from typing import List, Optional
 
 from loguru import logger
 from pydantic import BaseModel, Field
+
+from app.core.policy import get_policy
 
 
 # ─────────────────────────────────────────────────────────────
@@ -42,7 +48,10 @@ class DecisionOutput(BaseModel):
     The LangGraph routing edge reads these fields to decide the next node.
     """
     priority: str = "UNASSIGNED"
-    action: str = "PROCEED"            # "PROCEED", "ASK_USER", "ESCALATE"
+    # Set explicitly by the engine to one of the routing verbs the graph understands:
+    #   "generate_follow_up" | "notify" | "ASK_USER" | "ESCALATE"
+    # (the "notify" default is a fail-safe — process_lead always overwrites it).
+    action: str = "notify"
     assigned_queue: str = "GENERAL_SALES"
     reasoning: List[str] = Field(default_factory=list)
     halt_execution: bool = False        # If True, stop processing further rules
@@ -83,14 +92,16 @@ class MissingEmailRule(BaseRule):
 
 class LowConfidenceRule(BaseRule):
     """
-    GUARDRAIL: If the AI scored this lead but isn't confident (< 70%),
-    we defer to human judgment rather than taking autonomous action.
+    GUARDRAIL: If the AI scored this lead but isn't confident (below the
+    configured confidence gate, policy.decision.confidence_gate), we defer to
+    human judgment rather than taking autonomous action.
     """
     def evaluate(self, context: LeadContext, decision: DecisionOutput) -> DecisionOutput:
-        if context.ai_confidence < 0.70:
+        gate = get_policy().decision.confidence_gate
+        if context.ai_confidence < gate:
             decision.action = "ESCALATE"
             decision.reasoning.append(
-                f"AI confidence ({context.ai_confidence:.0%}) is below the 70% threshold. "
+                f"AI confidence ({context.ai_confidence:.0%}) is below the {gate:.0%} threshold. "
                 "Escalating to human for manual review."
             )
             decision.halt_execution = True
@@ -103,31 +114,33 @@ class LowConfidenceRule(BaseRule):
 
 class HighBudgetRule(BaseRule):
     """
-    BUSINESS RULE: Budget > 5 Lakh (500,000) → High Priority.
+    BUSINESS RULE: Budget at/above the configured threshold → High Priority.
     These leads represent the most significant revenue opportunity.
+    Threshold: policy.decision.high_budget_threshold.
     """
-    HIGH_BUDGET_THRESHOLD = 500_000  # INR 5L or USD 500K
 
     def evaluate(self, context: LeadContext, decision: DecisionOutput) -> DecisionOutput:
-        if context.budget > self.HIGH_BUDGET_THRESHOLD:
+        threshold = get_policy().decision.high_budget_threshold
+        if context.budget > threshold:
             decision.priority = "HIGH"
             decision.reasoning.append(
-                f"Budget ₹{context.budget:,.0f} exceeds the ₹5L threshold → High Priority."
+                f"Budget ₹{context.budget:,.0f} exceeds the ₹{threshold:,.0f} threshold → High Priority."
             )
         return decision
 
 
 class DecisionMakerRoutingRule(BaseRule):
     """
-    BUSINESS RULE: If the contact is a Decision Maker (CEO, VP, Director),
+    BUSINESS RULE: If the contact is a Decision Maker (CEO, VP, Director, …),
     route to the Senior Sales queue for white-glove handling.
+    Title keywords: policy.decision.decision_maker_titles.
     """
-    DECISION_MAKER_TITLES = {"ceo", "founder", "vp", "director", "cmo", "cto", "coo", "president"}
 
     def evaluate(self, context: LeadContext, decision: DecisionOutput) -> DecisionOutput:
         title_lower = (context.job_title or "").lower()
+        titles = get_policy().decision_maker_title_set
         # Check if ANY decision-maker keyword appears in the job title
-        if any(kw in title_lower for kw in self.DECISION_MAKER_TITLES):
+        if any(kw in title_lower for kw in titles):
             decision.assigned_queue = "SENIOR_SALES"
             decision.reasoning.append(
                 f"Job title '{context.job_title}' identified as a Decision Maker → Senior Sales queue."
@@ -199,6 +212,19 @@ class DecisionEngine:
         if decision.priority == "UNASSIGNED" and not decision.halt_execution:
             decision.priority = "MEDIUM"
             decision.reasoning.append("No specific priority rules matched → defaulting to Medium.")
+
+        # ── Emit an explicit next action per outcome ──────────────────────
+        # The guardrails (MissingEmailRule / LowConfidenceRule) already set
+        # ASK_USER / ESCALATE and halted, so we only DERIVE an action when we
+        # did NOT halt. This makes the "notify" (LOW/MEDIUM) branch reachable —
+        # previously every lead defaulted to PROCEED → generate_follow_up.
+        if not decision.halt_execution:
+            if decision.priority == "HIGH" or decision.assigned_queue == "SENIOR_SALES":
+                # High-value budget or a decision-maker persona → personalized follow-up.
+                decision.action = "generate_follow_up"
+            else:
+                # MEDIUM / LOW priority → just notify sales, no bespoke draft.
+                decision.action = "notify"
 
         logger.info(
             f"Decision Engine result: priority={decision.priority}, "

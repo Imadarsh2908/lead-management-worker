@@ -20,11 +20,13 @@ Role requirements per endpoint:
   DELETE /leads/{id} → Admin only (soft delete)
 """
 import uuid
+from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, allow_all_roles, allow_sales_or_admin, allow_admin_only
+from app.core.config import settings
 from app.models.lead import Lead, WorkflowState, WorkflowStatus, AuditLog
 from app.schemas.lead import LeadCreateRequest, LeadResponse, PaginatedLeadResponse, WorkflowStatusResponse, AuditLogResponse
 
@@ -105,6 +107,86 @@ def ingest_lead(
         lead_id=str(new_lead.id),
         workflow_id=workflow_id,
         lead_payload=payload.model_dump(),  # Passes the full payload as the initial memory
+    )
+
+    return LeadResponse(
+        id=new_lead.id,
+        email=new_lead.email,
+        first_name=new_lead.first_name,
+        last_name=new_lead.last_name,
+        company=new_lead.company,
+        priority=new_lead.priority.value,
+        created_at=new_lead.created_at,
+    )
+
+
+@router.post(
+    "/raw",
+    response_model=LeadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    include_in_schema=False,  # hidden — demo seam, not a public contract
+    summary="[DEMO-ONLY] Ingest an unvalidated raw lead payload",
+)
+async def ingest_lead_raw(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(allow_all_roles),
+    x_demo_raw: str = Header(default=""),
+):
+    """
+    DEMO-ONLY SEAM — env-guarded and INERT by default.
+
+    Bypasses the strict LeadCreateRequest schema (which requires a valid email)
+    so we can demonstrate the missing-contact-info escalation path. The raw JSON
+    body is passed straight through to the workflow, so the graph's `validate`
+    node sees the payload exactly as sent (e.g. WITHOUT an email) and escalates.
+
+    Guard: active ONLY when BOTH are true:
+      - settings.ENVIRONMENT == "development", AND
+      - request carries header `X-Demo-Raw: true`
+    Otherwise it responds 404, i.e. behaves as if the route does not exist.
+
+    Because the `leads` table requires a non-null unique email, we persist the
+    Lead row with a synthetic placeholder email when one is absent — but the
+    workflow still receives the ORIGINAL (emailless) payload, so validation
+    fails authentically.
+    """
+    if settings.ENVIRONMENT != "development" or x_demo_raw.strip().lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Body must be a JSON object.")
+
+    raw_email = (body.get("email") or "").strip()
+    # Placeholder only to satisfy the NOT NULL/unique DB constraint. The workflow
+    # receives `body` (which may have no email) and will escalate on validation.
+    db_email = raw_email or f"missing-{uuid.uuid4().hex[:8]}@demo.invalid"
+
+    new_lead = Lead(
+        email=db_email,
+        first_name=body.get("first_name"),
+        last_name=body.get("last_name"),
+        phone=body.get("phone"),
+        company=body.get("company"),
+        job_title=body.get("job_title"),
+        budget=body.get("budget") or 0.0,
+    )
+    db.add(new_lead)
+    db.flush()
+
+    db.add(WorkflowState(lead_id=new_lead.id, current_status=WorkflowStatus.RECEIVED))
+    db.commit()
+    db.refresh(new_lead)
+
+    workflow_id = str(uuid.uuid4())
+    from app.agents.graph import process_lead
+    background_tasks.add_task(
+        process_lead,
+        lead_id=str(new_lead.id),
+        workflow_id=workflow_id,
+        lead_payload=body,  # RAW payload — may lack email → validate node escalates
     )
 
     return LeadResponse(

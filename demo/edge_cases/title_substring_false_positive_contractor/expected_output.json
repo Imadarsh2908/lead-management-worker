@@ -1,0 +1,15 @@
+{
+  "case": "title_substring_false_positive_contractor",
+  "kind": "engine",
+  "known_issue": true,
+  "note": "KNOWN ISSUE: same substring bug \u2014 'Contractor' contains 'cto' (Contra-cto-r) and is WRONGLY routed to SENIOR_SALES.",
+  "output": {
+    "priority": "MEDIUM",
+    "assigned_queue": "SENIOR_SALES",
+    "action": "generate_follow_up",
+    "halt_execution": false,
+    "reasoning": [
+      "Job title 'Contractor' identified as a Decision Maker \u2192 Senior Sales queue."
+    ]
+  }
+}

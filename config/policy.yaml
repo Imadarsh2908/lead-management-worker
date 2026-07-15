@@ -1,0 +1,39 @@
+# ============================================================
+# policy.yaml — Business policy & operational constants
+# ------------------------------------------------------------
+# Single source of truth for every tunable business constant the agent
+# enforces. Loaded and validated at startup by app/core/policy.py
+# (get_policy()). Editing a value here changes behavior WITHOUT a code
+# change. See SOUL.md for the principles these numbers implement.
+# ============================================================
+
+decision:
+  # Budget (in the lead's currency) at/above which a lead is HIGH priority.
+  high_budget_threshold: 500000
+  # Minimum LLM confidence to act autonomously. Below this → human escalation.
+  confidence_gate: 0.70
+  # Job-title keywords that mark a decision-maker → Senior Sales queue.
+  decision_maker_titles: [ceo, founder, vp, director, cmo, cto, coo, president]
+  # Free/consumer email providers → treated as likely B2C → LOW priority.
+  freemail_domains:
+    - gmail.com
+    - yahoo.com
+    - hotmail.com
+    - outlook.com
+    - live.com
+    - icloud.com
+    - protonmail.com
+    - aol.com
+
+workflow:
+  # Max retries before the circuit breaks to human escalation. Also bounds the
+  # enrichment degrade-vs-retry loop.
+  max_retries: 3
+
+resilience:
+  crm_breaker:        {fail_max: 5, reset_timeout: 60}
+  enrichment_breaker: {fail_max: 3, reset_timeout: 30}
+  llm_breaker:        {fail_max: 3, reset_timeout: 60}
+  # Per-request network timeouts (seconds).
+  enrichment_timeout_seconds: 5
+  crm_timeout_seconds: 3

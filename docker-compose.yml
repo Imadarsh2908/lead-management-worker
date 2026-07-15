@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ============================================================
   # FastAPI Application (the Lead Management AI Worker)
@@ -18,6 +16,14 @@ services:
       # Override to use Docker internal hostnames instead of localhost
       - DATABASE_URL=postgresql://agentuser:agentpassword@db:5432/leadagentdb
       - REDIS_URL=redis://redis:6379/0
+    volumes:
+      # Bind-mount (not baked into the image) so editing AGENTS.md on the host
+      # changes agent scoring behavior in the RUNNING container immediately —
+      # no image rebuild, no container restart. llm_scorer.get_system_prompt()
+      # already re-reads the file on mtime change; this just extends that same
+      # hot-reload story across the container boundary. Read-only: the app
+      # only ever reads its own prompt, never writes it.
+      - ./AGENTS.md:/app/AGENTS.md:ro
     healthcheck:
       # Ensures the container is marked healthy only when FastAPI is actually responding
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -59,14 +65,20 @@ services:
       - agent_network
 
   # ============================================================
-  # Redis (LangGraph Workflow Checkpointing)
+  # Redis Stack (LangGraph Workflow Checkpointing)
+  # NOTE: LangGraph's RedisSaver needs the RediSearch + RedisJSON modules, which
+  # plain `redis:7-alpine` does NOT ship. `redis/redis-stack-server` bundles them.
+  # We pass persistence args via REDIS_ARGS (NOT a `command:` override) so the
+  # image still loads its modules — overriding `command` with plain redis-server
+  # would silently disable Search/JSON and break the checkpointer.
   # ============================================================
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack-server:latest
     container_name: lead_agent_redis
     restart: unless-stopped
-    # --appendonly yes = enables AOF persistence so checkpoints survive restarts
-    command: redis-server --appendonly yes
+    environment:
+      # --appendonly yes = AOF persistence so checkpoints survive restarts
+      - REDIS_ARGS=--appendonly yes
     ports:
       - "6379:6379"
     volumes:

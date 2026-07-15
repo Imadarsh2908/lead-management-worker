@@ -1,0 +1,15 @@
+{
+  "case": "title_director_correct_match",
+  "kind": "engine",
+  "known_issue": false,
+  "note": "Control case: 'Director' is itself a configured keyword, so this match is intentional and correct (contrast with the false positives above).",
+  "output": {
+    "priority": "MEDIUM",
+    "assigned_queue": "SENIOR_SALES",
+    "action": "generate_follow_up",
+    "halt_execution": false,
+    "reasoning": [
+      "Job title 'Director of Sales' identified as a Decision Maker \u2192 Senior Sales queue."
+    ]
+  }
+}

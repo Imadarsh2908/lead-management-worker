@@ -1,0 +1,15 @@
+{
+  "case": "confidence_exactly_at_gate",
+  "kind": "engine",
+  "known_issue": false,
+  "note": "policy.decision.confidence_gate is a STRICT '<' comparison. Confidence == 0.70 does NOT trigger the LowConfidenceRule guardrail \u2014 it proceeds.",
+  "output": {
+    "priority": "MEDIUM",
+    "assigned_queue": "GENERAL_SALES",
+    "action": "notify",
+    "halt_execution": false,
+    "reasoning": [
+      "No specific priority rules matched \u2192 defaulting to Medium."
+    ]
+  }
+}

@@ -11,6 +11,8 @@ gunicorn>=21.2.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-multipart>=0.0.7
+email-validator>=2.1.0
+PyYAML>=6.0        # config/policy.yaml loader (app/core/policy.py)
 
 # ============================================================
 # Database (PostgreSQL + SQLAlchemy + Alembic Migrations)
@@ -30,7 +32,14 @@ redis>=5.0.1
 langchain>=0.1.0
 langchain-core>=0.1.10
 langgraph>=0.0.21
+# Checkpointer backends (see app/core/memory.py): Redis Stack preferred, Postgres
+# durable fallback, in-memory last resort. Redis needs Search+JSON modules
+# (Redis Stack, not plain redis:7-alpine). Postgres needs psycopg v3 + its pool.
+langgraph-checkpoint-redis>=0.0.1
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary,pool]>=3.1.0
 langchain-openai>=0.0.2
+openai>=1.0.0     # OpenAI-compatible client used by app/agents/llm_scorer.py (OpenRouter)
 
 # ============================================================
 # Authentication (JWT)

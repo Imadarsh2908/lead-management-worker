@@ -1,0 +1,10 @@
+{
+  "case": "first_name_over_max_length",
+  "kind": "api",
+  "known_issue": false,
+  "note": "first_name max_length=100 \u2014 101 characters is correctly rejected with 422.",
+  "output": {
+    "http_status": 422,
+    "detail": "String should have at most 100 characters"
+  }
+}

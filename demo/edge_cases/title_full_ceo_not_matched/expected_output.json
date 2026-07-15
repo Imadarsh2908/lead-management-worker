@@ -1,0 +1,15 @@
+{
+  "case": "title_full_ceo_not_matched",
+  "kind": "engine",
+  "known_issue": true,
+  "note": "KNOWN GAP: a real Chief Executive Officer, when the title is spelled out in full (rather than abbreviated 'CEO'), does NOT match any keyword \u2014 'chief executive officer' contains none of {ceo, founder, vp, director, cmo, cto, coo, president} as a substring, so this genuine decision-maker is MISSED and routed to GENERAL_SALES.",
+  "output": {
+    "priority": "MEDIUM",
+    "assigned_queue": "GENERAL_SALES",
+    "action": "notify",
+    "halt_execution": false,
+    "reasoning": [
+      "No specific priority rules matched \u2192 defaulting to Medium."
+    ]
+  }
+}

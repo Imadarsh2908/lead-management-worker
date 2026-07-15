@@ -1,0 +1,10 @@
+{
+  "case": "negative_budget_rejected",
+  "kind": "api",
+  "known_issue": false,
+  "note": "LeadCreateRequest.budget has ge=0.0 \u2014 the API layer correctly rejects a negative budget with 422 (contrast with the engine-level gap above).",
+  "output": {
+    "http_status": 422,
+    "detail": "Input should be greater than or equal to 0"
+  }
+}

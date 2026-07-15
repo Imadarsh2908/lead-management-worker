@@ -27,6 +27,7 @@ from tenacity import (
 
 from app.agents.tools.base import BaseAgentTool
 from app.core.config import settings
+from app.core.policy import get_policy
 
 
 # ─────────────────────────────────────────────────────────────
@@ -53,12 +54,9 @@ class EnrichDomainOutput(BaseModel):
 
 # ─────────────────────────────────────────────────────────────
 # FREE MAIL DETECTION
+# The provider list lives in config/policy.yaml (decision.freemail_domains) so
+# it can be tuned without a code change. Read via get_policy().
 # ─────────────────────────────────────────────────────────────
-
-FREEMAIL_PROVIDERS = {
-    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
-    "live.com", "icloud.com", "protonmail.com", "aol.com",
-}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -97,8 +95,9 @@ class EnrichDomainTool(BaseAgentTool):
         Separated so Tenacity retries ONLY this function, not the full tool.
         """
         url = f"{settings.ENRICHMENT_API_URL}?domain={domain}"
-        # Strict 5-second timeout — never block the agent indefinitely
-        response = requests.get(url, timeout=5.0)
+        # Strict timeout (policy.resilience.enrichment_timeout_seconds) — never
+        # block the agent indefinitely.
+        response = requests.get(url, timeout=get_policy().resilience.enrichment_timeout_seconds)
         response.raise_for_status()  # Raises HTTPError for 4xx/5xx responses
         return response.json()
 
@@ -114,7 +113,7 @@ class EnrichDomainTool(BaseAgentTool):
             raise ValueError("'email' argument must be provided as a string")
 
         domain = email.split("@")[-1].lower()
-        is_freemail = domain in FREEMAIL_PROVIDERS
+        is_freemail = domain in get_policy().freemail_domain_set
 
         # Short‑circuit for freemail providers.
         if is_freemail:

@@ -1,0 +1,15 @@
+{
+  "case": "spam_priority_unreachable_via_rules",
+  "kind": "engine",
+  "known_issue": true,
+  "note": "KNOWN GAP: LeadPriority/ScoringResult both define a SPAM value, but NO rule in DecisionEngine ever assigns it \u2014 the rules engine can only produce HIGH/MEDIUM/LOW (or UNASSIGNED, defaulted to MEDIUM). SPAM is reachable only via a genuine LLM classification, never via the deterministic fallback.",
+  "output": {
+    "priority": "MEDIUM",
+    "assigned_queue": "GENERAL_SALES",
+    "action": "notify",
+    "halt_execution": false,
+    "reasoning": [
+      "No specific priority rules matched \u2192 defaulting to Medium."
+    ]
+  }
+}

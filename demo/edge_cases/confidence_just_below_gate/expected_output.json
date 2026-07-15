@@ -1,0 +1,15 @@
+{
+  "case": "confidence_just_below_gate",
+  "kind": "engine",
+  "known_issue": false,
+  "note": "One unit below the gate triggers ESCALATE via LowConfidenceRule.",
+  "output": {
+    "priority": "UNASSIGNED",
+    "assigned_queue": "GENERAL_SALES",
+    "action": "ESCALATE",
+    "halt_execution": true,
+    "reasoning": [
+      "AI confidence (70%) is below the 70% threshold. Escalating to human for manual review."
+    ]
+  }
+}

@@ -3,6 +3,11 @@ app/agents/graph.py
 --------------------
 The core LangGraph StateGraph — the brain of the Autonomous Lead Management Worker.
 
+Behavioral source of truth: SOUL.md (the worker's identity & inviolable
+guardrails). The numeric thresholds those guardrails use (confidence gate,
+max retries, …) live in config/policy.yaml and are read via get_policy() —
+never hardcode business constants in this file.
+
 How it works:
   - Each function is a "node" in the graph that receives the current AgentState,
     performs a specific action, and returns a dict of state updates.
@@ -16,16 +21,26 @@ Nodes in this graph:
              ↘ escalate ↗            ↘ lead_score ↗         ↘ generate_follow_up → notify → audit → END
                                                               ↘ escalate → audit → END
 """
+import threading
 import uuid
-from datetime import datetime, timezone
 from typing import Literal
 
 from loguru import logger
 
 from app.agents.state import AgentState, AuditLogEntry, ToolCallRecord
 from app.agents.decision_engine import DecisionEngine, LeadContext
+from app.agents.llm_scorer import score_lead, ScoringResult
 from app.core.memory import get_checkpointer
+from app.core.policy import get_policy
 from app.core.resilience import safe_enrich_domain, safe_update_crm, validate_required_fields
+
+# Priority strictness ordering. The rule-based guardrail may move a lead to a
+# STRICTER (lower-rank) priority than the LLM proposed, but never a higher one.
+_PRIORITY_RANK = {"SPAM": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "UNASSIGNED": 2}
+
+
+def _priority_rank(priority: str) -> int:
+    return _PRIORITY_RANK.get(priority, 2)
 
 try:
     from langgraph.graph import StateGraph, END
@@ -105,22 +120,50 @@ def node_validate(state: AgentState) -> dict:
 def node_crm_lookup(state: AgentState) -> dict:
     """
     NODE: crm_lookup
-    Checks if this lead already exists in the CRM to prevent duplicate processing.
-    Uses a simulated lookup here — replace with actual CRM API call in production.
-    """
-    logger.info(f"[GRAPH] CRM lookup for lead {state.lead_id}")
-    email = state.memory.get("email", "")
+    Checks if this lead already exists in the CRM (our own leads table stands in
+    for the CRM here) to prevent duplicate processing.
 
-    # Simulated CRM lookup — in production, this would call safe_update_crm()
-    # with a GET request or query your CRM SDK.
-    exists_in_crm = False  # Default: assume new lead for demo purposes
+    We match on email (excluding the current lead_id so a lead never "finds
+    itself"). Wrapped in try/except for graceful degradation: if the DB is
+    unavailable we assume a NEW lead and record a warning rather than crashing
+    the whole workflow.
+    """
+    from sqlalchemy.orm import Session
+    from app.core.database import engine
+    from app.models.lead import Lead
+
+    logger.info(f"[GRAPH] CRM lookup for lead {state.lead_id}")
+    email = (state.memory.get("email") or "").lower().strip()
+
+    audit_entry = None
+    try:
+        with Session(engine) as db:
+            query = db.query(Lead).filter(Lead.email == email)
+            # Exclude the current lead so it doesn't count as its own duplicate.
+            query = query.filter(Lead.id != state.lead_id)
+            existing = query.first() if email else None
+            exists_in_crm = existing is not None
+        audit_entry = _audit(
+            state, "TOOL_INVOCATION",
+            f"CRM lookup complete. Exists: {exists_in_crm}",
+            inputs={"email": email},
+            outputs={"exists_in_crm": exists_in_crm},
+        )
+    except Exception as e:
+        # Graceful degradation: treat as a new lead and keep the workflow moving.
+        logger.warning(f"[GRAPH] CRM lookup DB error for lead {state.lead_id}: {e}. Assuming new lead.")
+        exists_in_crm = False
+        audit_entry = _audit(
+            state, "TOOL_INVOCATION",
+            f"CRM lookup degraded (DB error) — assuming new lead. Error: {e}",
+            inputs={"email": email},
+            outputs={"exists_in_crm": False, "degraded": True},
+        )
 
     return {
         "current_step": "crm_lookup",
         "memory": {**state.memory, "exists_in_crm": exists_in_crm},
-        "audit_logs": state.audit_logs + [
-            _audit(state, "TOOL_INVOCATION", f"CRM lookup complete. Exists: {exists_in_crm}")
-        ],
+        "audit_logs": state.audit_logs + [audit_entry],
     }
 
 
@@ -140,17 +183,26 @@ def node_enrichment(state: AgentState) -> dict:
     else:
         enrichment_data = {"enrichment_failed": True}
 
+    failed = bool(enrichment_data.get("enrichment_failed", False))
+
+    # Count enrichment failures on a DEDICATED counter (not the general retry_count).
+    # route_after_enrichment uses this to decide retry-vs-degrade, so enrichment can
+    # exhaust its attempts and proceed with degraded data WITHOUT tripping the
+    # general circuit breaker that escalates to a human.
+    enrichment_retry_count = state.enrichment_retry_count + 1 if failed else state.enrichment_retry_count
+
     # Record the tool call in tool_history so the LLM knows what was called
     tool_record = ToolCallRecord(
         tool_name="enrich_lead_domain",
         inputs={"email": email},
         outputs=enrichment_data,
-        success=not enrichment_data.get("enrichment_failed", False),
+        success=not failed,
     )
 
     return {
         "status": "ENRICHING",
         "current_step": "enrichment",
+        "enrichment_retry_count": enrichment_retry_count,
         "memory": {**state.memory, "enrichment": enrichment_data},
         "tool_history": state.tool_history + [tool_record],
         "audit_logs": state.audit_logs + [
@@ -163,47 +215,132 @@ def node_enrichment(state: AgentState) -> dict:
     }
 
 
+def _llm_tool_record(result: ScoringResult, context: dict) -> ToolCallRecord:
+    """Captures the full LLM exchange as an auditable ToolCallRecord."""
+    exchange = result._exchange or {}
+    raw = exchange.get("raw_response")
+    return ToolCallRecord(
+        tool_name="llm_score_lead",
+        inputs={
+            "context": context,
+            "prompt_hash": exchange.get("prompt_hash"),
+            "prompt_excerpt": exchange.get("prompt_excerpt"),
+        },
+        outputs={
+            # Cap raw text so a chatty model can't bloat the audit row.
+            "raw_response": raw[:2000] if isinstance(raw, str) else raw,
+            "parsed": exchange.get("parsed"),
+            "priority": result.priority,
+            "confidence": result.confidence,
+            "next_action": result.next_action,
+            "source": result.source,
+            "fallback_reason": exchange.get("fallback_reason"),
+        },
+        success=result.source != "rules_fallback",
+    )
+
+
 def node_lead_score(state: AgentState) -> dict:
     """
     NODE: lead_score
-    Evaluates the enriched lead context using the Decision Engine.
-    Sets priority and confidence on the state.
-    
-    In a real deployment, this node would call the LLM (e.g., OpenAI GPT-3.5)
-    to produce a confidence score based on the system prompt and lead context.
-    For this demo, we use the rule-based Decision Engine to simulate LLM output.
+    Scores the enriched lead with the REAL LLM (app.agents.llm_scorer.score_lead),
+    then runs the rule-based DecisionEngine as a GUARDRAIL on top of the model's
+    output.
+
+    Guardrail contract (see previous phase — routing semantics unchanged):
+      - Rules may only make the outcome STRICTER: downgrade priority or force
+        escalation. They may NEVER upgrade priority or grant a more autonomous
+        action than the model asked for.
+      - Every override emits its own "GUARDRAIL_OVERRIDE" audit entry with the
+        rule name and before/after values.
+
+    The LLM's confidence flows into state.confidence, so the existing confidence
+    gate in route_after_decision keeps its behavior (a rules_fallback scores 0.50,
+    which is below the confidence gate and therefore escalates by design).
     """
     logger.info(f"[GRAPH] Scoring lead {state.lead_id}")
     enrichment = state.memory.get("enrichment", {})
 
-    # Build context for the Decision Engine from accumulated state
-    context = LeadContext(
-        email=state.memory.get("email"),
-        budget=state.memory.get("budget", 0.0),
-        job_title=state.memory.get("job_title", ""),
-        ai_confidence=0.88,  # In production: parsed from LLM response JSON
-        company_size=enrichment.get("company_size"),
-        is_freemail=enrichment.get("is_freemail", False),
-    )
+    # Build the context dict handed to the model (and, below, the guardrail).
+    context = {
+        "email": state.memory.get("email"),
+        "budget": state.memory.get("budget", 0.0),
+        "job_title": state.memory.get("job_title", ""),
+        "company": state.memory.get("company"),
+        "company_size": enrichment.get("company_size"),
+        "is_freemail": enrichment.get("is_freemail", False),
+        "enrichment_failed": enrichment.get("enrichment_failed", False),
+    }
 
-    engine = DecisionEngine()
-    decision = engine.process_lead(context)
+    # 1. LLM proposes a score (self-corrects / falls back internally).
+    llm_result = score_lead(context)
+
+    # 2. Rule engine as guardrail — feed the LLM's confidence so its low-confidence
+    #    guardrail evaluates against the model's actual certainty.
+    guardrail_ctx = LeadContext(
+        email=context["email"],
+        budget=context["budget"] or 0.0,
+        job_title=context["job_title"] or "",
+        ai_confidence=llm_result.confidence,
+        company_size=context["company_size"],
+        is_freemail=context["is_freemail"],
+    )
+    rules = DecisionEngine().process_lead(guardrail_ctx)
+
+    overrides = []
+    final_priority = llm_result.priority
+    final_confidence = llm_result.confidence
+
+    # GUARDRAIL A: rules may DOWNGRADE priority (stricter), never upgrade it.
+    if _priority_rank(rules.priority) < _priority_rank(final_priority):
+        overrides.append(_audit(
+            state, "GUARDRAIL_OVERRIDE",
+            f"Priority downgraded by rule engine: {final_priority} → {rules.priority}",
+            rule="PriorityDowngradeGuardrail",
+            before=final_priority, after=rules.priority,
+        ))
+        final_priority = rules.priority
+
+    # GUARDRAIL B: hard-stop rules (missing email / low confidence) FORCE escalate.
+    if rules.action in ("ASK_USER", "ESCALATE"):
+        final_action = "ESCALATE"
+        if llm_result.next_action != "ESCALATE":
+            overrides.append(_audit(
+                state, "GUARDRAIL_OVERRIDE",
+                f"Guardrail forced escalation (rule action={rules.action}).",
+                rule="EscalationGuardrail",
+                before=llm_result.next_action, after="ESCALATE",
+            ))
+    else:
+        # Derive a routable action from the guardrailed priority — identical to the
+        # phase-1 DecisionEngine mapping, so routing semantics are unchanged.
+        final_action = "generate_follow_up" if (
+            final_priority == "HIGH" or rules.assigned_queue == "SENIOR_SALES"
+        ) else "notify"
 
     return {
         "status": "ANALYZING",
         "current_step": "lead_score",
-        "priority": decision.priority,
-        "confidence": context.ai_confidence,
-        "next_action": decision.action,
-        "memory": {**state.memory, "decision": decision.model_dump()},
+        "priority": final_priority,
+        "confidence": final_confidence,
+        "next_action": final_action,
+        "memory": {**state.memory, "decision": {
+            "llm": llm_result.model_dump(),
+            "rules_priority": rules.priority,
+            "final_priority": final_priority,
+            "final_action": final_action,
+        }},
+        "tool_history": state.tool_history + [_llm_tool_record(llm_result, context)],
         "audit_logs": state.audit_logs + [
             _audit(
                 state, "LLM_REASONING",
-                f"Lead scored: priority={decision.priority}, action={decision.action}",
-                reasoning=decision.reasoning,
-                confidence=context.ai_confidence,
+                f"LLM scored lead: priority={llm_result.priority}, "
+                f"confidence={llm_result.confidence:.2f}, source={llm_result.source}",
+                reasoning=llm_result.reasoning,
+                confidence=llm_result.confidence,
+                source=llm_result.source,
             )
-        ],
+        ] + overrides,
     }
 
 
@@ -293,7 +430,8 @@ def node_retry(state: AgentState) -> dict:
     """
     NODE: retry
     Increments the retry counter.
-    The routing edge checks if retry_count >= 3 and routes to escalation if so.
+    The routing edge checks retry_count against policy.workflow.max_retries and
+    routes to escalation once the ceiling is reached.
     """
     new_count = state.retry_count + 1
     logger.warning(f"[GRAPH] Retry {new_count} for lead {state.lead_id}")
@@ -317,7 +455,29 @@ def node_escalate(state: AgentState) -> dict:
     In production: this would send a high-priority Slack DM to the manager,
     create a ticket in Jira/Zendesk, and pause the workflow.
     """
-    logger.warning(f"[GRAPH] Escalating lead {state.lead_id} to human. Reason: {state.validation_errors}")
+    # Build a human-readable failure reason for the audit trail. Escalation can be
+    # triggered by validation errors, low confidence, or exhausted retries — capture
+    # whichever applies so the on-call human knows why the lead landed on their desk.
+    enrichment = state.memory.get("enrichment", {})
+    policy = get_policy()
+    if state.validation_errors:
+        failure_reason = f"Validation failed: {state.validation_errors}"
+    elif state.confidence < policy.decision.confidence_gate:
+        failure_reason = (
+            f"AI confidence {state.confidence:.0%} below "
+            f"{policy.decision.confidence_gate:.0%} threshold"
+        )
+    elif state.retry_count >= policy.workflow.max_retries:
+        failure_reason = f"Max retries ({state.retry_count}) exhausted"
+    elif enrichment.get("enrichment_failed"):
+        failure_reason = "Enrichment failure"
+    else:
+        failure_reason = "Unspecified escalation"
+
+    logger.warning(
+        f"[GRAPH] Escalating lead {state.lead_id} to human. "
+        f"Reason: {failure_reason} (retry_count={state.retry_count})"
+    )
 
     return {
         "status": "ESCALATED",
@@ -326,6 +486,7 @@ def node_escalate(state: AgentState) -> dict:
             _audit(
                 state, "ESCALATION",
                 "Lead escalated to human agent for manual review.",
+                failure_reason=failure_reason,
                 validation_errors=state.validation_errors,
                 confidence=state.confidence,
                 retry_count=state.retry_count,
@@ -371,7 +532,9 @@ def node_audit(state: AgentState) -> dict:
             if wf_state:
                 wf_state.current_status = DBWorkflowStatus(final_status)
 
-            # 3. Bulk-insert all audit log entries (single transaction)
+            # 3a. Bulk-insert the reasoning/state-transition audit entries.
+            #     (metadata inputs/outputs are carried through when a node set them,
+            #      e.g. the CRM lookup node.)
             for log_entry in state.audit_logs:
                 db_log = AuditLog(
                     lead_id=state.lead_id,
@@ -385,6 +548,23 @@ def node_audit(state: AgentState) -> dict:
                     },
                 )
                 db.add(db_log)
+
+            # 3b. Persist tool I/O: one row per ToolCallRecord so tool_inputs /
+            #     tool_outputs are actually populated (previously nothing wrote them).
+            for tool_call in state.tool_history:
+                db.add(AuditLog(
+                    lead_id=state.lead_id,
+                    action_type="TOOL_INVOCATION",
+                    tool_inputs=tool_call.inputs,
+                    tool_outputs=tool_call.outputs,
+                    llm_reasoning={
+                        "tool_name": tool_call.tool_name,
+                        "success": tool_call.success,
+                        "error": tool_call.error,
+                        "workflow_id": str(state.workflow_id),
+                    },
+                    message=f"Tool '{tool_call.tool_name}' invoked (success={tool_call.success}).",
+                ))
 
             db.commit()
             logger.info(
@@ -433,37 +613,90 @@ def route_after_crm(state: AgentState) -> Literal["enrichment", "lead_score"]:
     return "enrichment"
 
 
+def route_after_enrichment(state: AgentState) -> Literal["retry", "lead_score"]:
+    """
+    Decides what to do after the enrichment node runs.
+
+    Enrichment failure is TREATED DIFFERENTLY from validation/confidence failure:
+      - It is a degradable, transient condition (the enrichment API being down),
+        so we RETRY it (route → "retry") while we still have attempts left.
+      - It is NOT, by itself, a reason to escalate to a human.
+
+    Two-way distinction, encoded explicitly against the DEDICATED
+    enrichment_retry_count (NOT the general retry_count / circuit breaker):
+      1. enrichment_failed AND enrichment_retry_count < max_retries → "retry"
+      2. everything else                                            → "lead_score"
+
+    Case (2) covers BOTH a successful enrichment AND the FINAL attempt
+    (enrichment_retry_count >= max_retries): on the final attempt we PROCEED to scoring with
+    enrichment_failed=True still in memory (graceful degradation) rather than
+    escalating. Because this counter is separate from retry_count, exhausting
+    enrichment attempts caps the general breaker at 2 loop-backs and NEVER trips
+    route_after_retry's escalation — escalation stays reserved for
+    validation/confidence failures (route_after_validate / the confidence guardrail).
+    """
+    enrichment = state.memory.get("enrichment", {})
+    enrichment_failed = bool(enrichment.get("enrichment_failed"))
+    max_retries = get_policy().workflow.max_retries
+
+    if enrichment_failed and state.enrichment_retry_count < max_retries:
+        logger.warning(
+            f"[ROUTE] Enrichment failed (enrichment_retry_count={state.enrichment_retry_count}) → retrying"
+        )
+        return "retry"
+
+    if enrichment_failed:
+        # Final attempt: proceed with degraded (null) company data — do NOT escalate.
+        logger.warning(
+            f"[ROUTE] Enrichment still failing at enrichment_retry_count={state.enrichment_retry_count} "
+            "→ proceeding to scoring with degraded data (graceful degradation)"
+        )
+    return "lead_score"
+
+
 def route_after_decision(state: AgentState) -> Literal["generate_follow_up", "notify", "escalate"]:
     """
     This is the most critical routing edge — the AI confidence guardrail.
-    
+
     Even if the Decision Engine decided to "generate_follow_up", if the
     underlying confidence score is too low, we OVERRIDE that decision
     and escalate to a human. The agent's recommendation is advisory,
     not absolute, when confidence is below the threshold.
     """
-    # CONFIDENCE GUARDRAIL: override any action if AI isn't sure enough
-    if state.confidence < 0.70:
-        logger.warning(f"[ROUTE] Confidence {state.confidence:.0%} < 70% → escalating")
+    # CONFIDENCE GUARDRAIL: override any action if AI isn't sure enough.
+    gate = get_policy().decision.confidence_gate
+    if state.confidence < gate:
+        logger.warning(f"[ROUTE] Confidence {state.confidence:.0%} < {gate:.0%} → escalating")
         return "escalate"
 
-    # Route based on the Decision Engine's recommendation
-    if state.next_action == "generate_follow_up" or state.next_action == "PROCEED":
-        return "generate_follow_up"
-    elif state.next_action == "ESCALATE":
+    # Explicit, exhaustive mapping from the engine's action → next node.
+    # ASK_USER means we cannot proceed autonomously, so it escalates too.
+    # There is deliberately NO catch-all "else → notify": an unknown action is a
+    # bug, and we FAIL SAFE (escalate to a human) rather than FAIL OPEN (auto-notify).
+    action_to_node: dict[str, Literal["generate_follow_up", "notify", "escalate"]] = {
+        "generate_follow_up": "generate_follow_up",
+        "notify": "notify",
+        "ASK_USER": "escalate",
+        "ESCALATE": "escalate",
+    }
+    next_node = action_to_node.get(state.next_action or "")
+    if next_node is None:
+        logger.warning(
+            f"[ROUTE] Unknown decision action '{state.next_action}' → escalating (fail safe)"
+        )
         return "escalate"
-    else:
-        # Default for LOW/MEDIUM priority leads: just notify without drafting email
-        return "notify"
+    return next_node
 
 
 def route_after_retry(state: AgentState) -> Literal["escalate", "validate"]:
     """
-    If we've retried 3 or more times, we're in an infinite failure loop.
-    Break the loop by escalating to a human rather than retrying forever.
+    If we've hit the configured retry ceiling (policy.workflow.max_retries), we're
+    in an infinite failure loop. Break it by escalating to a human rather than
+    retrying forever.
     """
-    if state.retry_count >= 3:
-        logger.error(f"[ROUTE] Max retries ({state.retry_count}) reached → escalating")
+    max_retries = get_policy().workflow.max_retries
+    if state.retry_count >= max_retries:
+        logger.error(f"[ROUTE] Max retries ({state.retry_count}/{max_retries}) reached → escalating")
         return "escalate"
     # Restart from validation on retry (re-check the data in case it changed)
     return "validate"
@@ -509,7 +742,8 @@ def build_graph():
     # ── Define Edges (Fixed) ──────────────────────────────
     # Linear edges: no branching, always go to the next node
     workflow.add_edge("receive_lead", "validate")
-    workflow.add_edge("enrichment", "lead_score")
+    # NOTE: enrichment → {retry | lead_score} is a CONDITIONAL edge (see below),
+    # not a fixed edge — this is what wires the previously-orphaned retry loop.
     workflow.add_edge("lead_score", "decision")
     workflow.add_edge("generate_follow_up", "notify")
     workflow.add_edge("notify", "audit")
@@ -531,6 +765,16 @@ def build_graph():
         route_after_crm,
         {
             "enrichment": "enrichment",
+            "lead_score": "lead_score",
+        }
+    )
+    # Retry loop wiring: on enrichment failure (with attempts remaining) route into
+    # the retry node; otherwise proceed to scoring (possibly with degraded data).
+    workflow.add_conditional_edges(
+        "enrichment",
+        route_after_enrichment,
+        {
+            "retry": "retry",
             "lead_score": "lead_score",
         }
     )
@@ -562,6 +806,32 @@ def build_graph():
     return compiled_app
 
 
+# ── Compiled-graph singleton ──────────────────────────────────
+# Compiling the StateGraph is expensive and only needs to happen ONCE per process.
+# process_lead() used to call build_graph() on every invocation; now every
+# FastAPI background task reuses this lazily-built, thread-safe singleton.
+_compiled_graph = None
+_compiled_graph_lock = threading.Lock()
+
+
+def get_compiled_graph():
+    """
+    Returns the process-wide compiled LangGraph app, building it on first use.
+
+    Uses double-checked locking so concurrent background tasks don't each pay
+    the compilation cost (or race to build competing instances). Propagates the
+    ImportError from build_graph() when LangGraph is unavailable so callers keep
+    their existing fallback behavior.
+    """
+    global _compiled_graph
+    if _compiled_graph is None:
+        with _compiled_graph_lock:
+            # Re-check inside the lock: another thread may have built it while we waited.
+            if _compiled_graph is None:
+                _compiled_graph = build_graph()
+    return _compiled_graph
+
+
 def process_lead(lead_id: str, workflow_id: str, lead_payload: dict):
     """
     Entry point to process a single lead through the full LangGraph workflow.
@@ -581,7 +851,7 @@ def process_lead(lead_id: str, workflow_id: str, lead_payload: dict):
     logger.info(f"Starting lead workflow: lead={lead_id}, workflow={workflow_id}")
 
     try:
-        graph_app = build_graph()
+        graph_app = get_compiled_graph()  # Reuse the process-wide compiled singleton
     except ImportError as e:
         logger.error(f"Cannot build graph: {e}")
         return

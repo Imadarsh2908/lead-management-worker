@@ -1,0 +1,10 @@
+{
+  "case": "budget_zero_boundary",
+  "kind": "api",
+  "known_issue": false,
+  "note": "budget ge=0.0 is INCLUSIVE \u2014 exactly 0 is accepted (202).",
+  "output": {
+    "http_status": 202,
+    "detail": null
+  }
+}

@@ -136,6 +136,37 @@ def test_parse_llm_json_response_failure():
     assert "Expecting value" in result["parse_error"]
 
 
+def test_parse_llm_json_response_strip_bug_regression():
+    """
+    Regression for the `.strip("```json")` bug: that call treated its argument as
+    a SET OF CHARACTERS and greedily ate any of {'`','j','s','o','n'} from both
+    ends, corrupting valid payloads. The fixed parser removes fences as exact
+    substrings, so:
+      - keys/values containing 'json' survive intact, and
+      - a bare scalar beginning with a stripped char (e.g. `null`) is not mangled.
+    """
+    # 1. Key literally named "json_data" must survive, fenced or not.
+    fenced = '```json\n{"json_data": "season-of-json", "priority": "LOW"}\n```'
+    res = parse_llm_json_response(fenced)
+    assert res["parse_error"] is None
+    assert res["data"]["json_data"] == "season-of-json"
+    assert res["data"]["priority"] == "LOW"
+
+    plain = '{"json_data": 42, "note": "nojson"}'
+    res = parse_llm_json_response(plain)
+    assert res["data"] == {"json_data": 42, "note": "nojson"}
+
+    # 2. The crisp failure of the old set-strip: leading 'n' of `null` was eaten,
+    #    yielding invalid `ull`. The fixed parser handles it correctly.
+    res = parse_llm_json_response("null")
+    assert res["parse_error"] is None
+    assert res["data"] is None
+
+    # 3. Fence without a language tag still works.
+    res = parse_llm_json_response('```\n{"a": 1}\n```')
+    assert res["data"] == {"a": 1}
+
+
 def test_validate_required_fields():
     from app.core.resilience import validate_required_fields
     # Valid payload

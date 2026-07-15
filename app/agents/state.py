@@ -83,16 +83,26 @@ class AgentState(BaseModel):
     # e.g., "generate_follow_up", "escalate", "notify"
     next_action: Optional[str] = Field(default=None)
     
-    # retry_count: incremented by the retry node, checked by routing edges
-    # If retry_count >= 3, the circuit forces escalation instead of more retries
+    # retry_count: incremented by the retry node, checked by route_after_retry.
+    # This is the GENERAL circuit breaker — if retry_count >= 3, the workflow
+    # escalates instead of looping forever. It is deliberately SEPARATE from
+    # enrichment_retry_count below so that a degradable enrichment failure never
+    # trips this human-escalation breaker.
     retry_count: int = Field(default=0, ge=0)
+
+    # enrichment_retry_count: how many times enrichment has failed for this lead.
+    # Tracked independently of retry_count because enrichment is DEGRADABLE — after
+    # exhausting its attempts we proceed to scoring with null company data rather
+    # than escalating. Incremented by node_enrichment; read by route_after_enrichment.
+    enrichment_retry_count: int = Field(default=0, ge=0)
 
     # ── AI Outputs ────────────────────────────────────────
     # priority: LLM's final classification (HIGH, MEDIUM, LOW, SPAM, UNASSIGNED)
     priority: str = Field(default="UNASSIGNED")
     
     # confidence: 0.0 to 1.0, set by the LLM alongside its priority decision
-    # If < 0.70, the routing edge overrides next_action and forces escalation
+    # If below the configured confidence gate (policy.decision.confidence_gate),
+    # the routing edge overrides next_action and forces escalation.
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
     # ── Validation Results ────────────────────────────────

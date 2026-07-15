@@ -19,7 +19,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional, List, Dict, Any
 
-from sqlalchemy import String, DateTime, Boolean, ForeignKey, Enum, Index, Integer, Float, Uuid, JSON
+from sqlalchemy import String, DateTime, Boolean, ForeignKey, Enum, Index, Integer, Float, Uuid, JSON, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
@@ -57,6 +57,7 @@ class AuditActionType(str, PyEnum):
     STATE_TRANSITION = "STATE_TRANSITION"   # Workflow moved from one step to another
     TOOL_INVOCATION = "TOOL_INVOCATION"     # An external API/tool was called
     LLM_REASONING = "LLM_REASONING"         # The LLM made a classification decision
+    GUARDRAIL_OVERRIDE = "GUARDRAIL_OVERRIDE"  # A rule guardrail overrode the LLM (downgrade/escalate)
     ESCALATION = "ESCALATION"               # Lead was escalated to human
     SYSTEM_ERROR = "SYSTEM_ERROR"           # An unexpected exception occurred
 
@@ -110,9 +111,12 @@ class Lead(BaseModel):
             raise ValueError(f"Invalid email format: {address}")
         return address.lower().strip()
 
-    # Partial index: faster queries when filtering non-deleted leads
+    # Partial index: faster queries when filtering non-deleted leads.
+    # Use a text() predicate (not BaseModel.is_deleted, which is the ABSTRACT
+    # base's column and cannot bind here) so PostgreSQL compiles the WHERE clause
+    # correctly. postgresql_where is dialect-specific — SQLite simply ignores it.
     __table_args__ = (
-        Index("ix_leads_active", "id", postgresql_where=(BaseModel.is_deleted == False)),
+        Index("ix_leads_active", "id", postgresql_where=text("is_deleted = false")),
     )
 
 

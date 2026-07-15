@@ -1,0 +1,46 @@
+# Keep the Docker build context small and reproducible.
+# Anything not needed to build/run the backend image is excluded.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+venv/
+.venv/
+
+# Local databases / secrets
+*.db
+*.sqlite*
+.env
+
+# Version control & CI
+.git/
+.gitignore
+.github/
+
+# Frontend (built and served separately, not part of the API image)
+frontend/
+
+# Tests, demo harness, and docs (not needed at runtime)
+tests/
+demo/
+docs/
+*.md
+!README.md
+# AGENTS.md is the LLM scoring system prompt (settings.AGENT_PROMPT_PATH),
+# loaded from disk at runtime by app/agents/llm_scorer.py — it MUST ship in
+# the image (or be bind-mounted; see docker-compose.yml) or LLM scoring
+# raises "Agent system prompt not found" on first use.
+!AGENTS.md
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

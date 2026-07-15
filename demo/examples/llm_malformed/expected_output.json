@@ -1,0 +1,55 @@
+{
+  "scenario": "llm_malformed",
+  "final_status": "COMPLETED",
+  "audit": [
+    {
+      "action_type": "STATE_TRANSITION",
+      "message": "Lead ingested and workflow started.",
+      "confidence": 0.8
+    },
+    {
+      "action_type": "STATE_TRANSITION",
+      "message": "Validation complete. Errors: None",
+      "confidence": 0.8
+    },
+    {
+      "action_type": "TOOL_INVOCATION",
+      "message": "CRM lookup complete. Exists: False",
+      "confidence": 0.8
+    },
+    {
+      "action_type": "TOOL_INVOCATION",
+      "message": "Domain enrichment completed. Failed: False",
+      "confidence": 0.8
+    },
+    {
+      "action_type": "LLM_REASONING",
+      "message": "LLM scored lead: priority=HIGH, confidence=0.80, source=llm_selfcorrected",
+      "confidence": 0.8
+    },
+    {
+      "action_type": "LLM_REASONING",
+      "message": "Follow-up email draft generated.",
+      "confidence": 0.8
+    },
+    {
+      "action_type": "TOOL_INVOCATION",
+      "message": "Sales team notified via Slack/Email.",
+      "confidence": 0.8
+    },
+    {
+      "action_type": "TOOL_INVOCATION",
+      "message": "Tool 'enrich_lead_domain' invoked (success=True)."
+    },
+    {
+      "action_type": "TOOL_INVOCATION",
+      "message": "Tool 'llm_score_lead' invoked (success=True).",
+      "source": "llm_selfcorrected",
+      "confidence": 0.8
+    },
+    {
+      "action_type": "TOOL_INVOCATION",
+      "message": "Tool 'send_slack_notification' invoked (success=True)."
+    }
+  ]
+}
