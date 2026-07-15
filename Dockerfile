@@ -47,6 +47,15 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+# appuser is a system account (useradd -r) with no home directory created.
+# Point HOME at /app (already chowned to appuser below) so anything that
+# tries to write cache/config files under $HOME has somewhere valid to
+# write — Gunicorn 25+'s control socket defaults to $HOME/.gunicorn/ and
+# fails with "Permission denied: '/home/appuser'" otherwise (that dir was
+# never created). Also explicitly disabled in docker-entrypoint.sh, since
+# we don't use gunicornc runtime management and this feature has caused
+# restart loops in other constrained container platforms.
+ENV HOME=/app
 
 # Copy the application source code
 COPY . .
