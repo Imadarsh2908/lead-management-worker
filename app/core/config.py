@@ -44,10 +44,14 @@ class Settings(BaseSettings):
     # target org runs open-weight models). OpenRouter speaks the OpenAI Chat
     # Completions API, so the official `openai` SDK works unchanged.
     LLM_BASE_URL: str = "https://openrouter.ai/api/v1"
-    # Inexpensive open-weight instruct model currently available on OpenRouter.
-    # (Qwen2.5 7B Instruct — cheap, supports JSON response_format. Swap freely,
-    #  e.g. "meta-llama/llama-3.1-8b-instruct".)
-    LLM_MODEL: str = "qwen/qwen-2.5-7b-instruct"
+    # Open-weight instruct model on OpenRouter. Default is a FREE tier
+    # (openai/gpt-oss-20b:free) — open-weight, 131k context, and reliable at the
+    # strict-JSON output this app requires. Verified end-to-end via the app's
+    # JSON-mode call path. Swap freely (e.g. a paid "qwen/qwen-2.5-7b-instruct"
+    # for higher reliability, or another ":free" model).
+    # NOTE: free tiers share upstream rate limits and can 429 under load; the
+    # scorer degrades to the rule engine on any failure (source="rules_fallback").
+    LLM_MODEL: str = "openai/gpt-oss-20b:free"
     LLM_API_KEY: SecretStr = SecretStr("not-set")
     LLM_TIMEOUT_SECONDS: int = 20
     LLM_ENABLED: bool = True
