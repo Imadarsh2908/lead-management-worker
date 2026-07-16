@@ -100,7 +100,7 @@ export default function LeadTable({ onViewDetails }) {
                   <th>Contact</th>
                   <th>Company · Title</th>
                   <th>Priority</th>
-                  <th>Ingested</th>
+                  <th className="col-hide-sm">Ingested</th>
                   {canDeleteLeads && <th style={{ textAlign: 'right' }}>Action</th>}
                 </tr>
               </thead>
@@ -121,7 +121,7 @@ export default function LeadTable({ onViewDetails }) {
                       <div style={{ fontSize: '0.78rem', color: 'hsl(var(--text-secondary))' }}>{lead.job_title || '—'}</div>
                     </td>
                     <td><Badge value={lead.priority} /></td>
-                    <td style={{ fontSize: '0.82rem', color: 'hsl(var(--text-secondary))' }}>{fmt(lead.created_at)}</td>
+                    <td className="col-hide-sm" style={{ fontSize: '0.82rem', color: 'hsl(var(--text-secondary))' }}>{fmt(lead.created_at)}</td>
                     {canDeleteLeads && (
                       <td style={{ textAlign: 'right' }}>
                         <button className="btn btn-danger" style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }}

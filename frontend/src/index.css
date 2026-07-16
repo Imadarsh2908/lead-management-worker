@@ -351,7 +351,7 @@ a:hover { color: var(--primary-300); }
 }
 
 /* Shell body */
-.shell-body { display: flex; flex: 1; overflow: hidden; }
+.shell-body { display: flex; flex: 1; overflow: hidden; position: relative; }
 
 /* Sidebar */
 .sidebar {
@@ -365,6 +365,26 @@ a:hover { color: var(--primary-300); }
   gap: 0.25rem;
   overflow-y: auto;
 }
+
+/* Mobile nav toggle (hidden on desktop) */
+.nav-toggle-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px; height: 34px;
+  background: var(--bg-03);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--r-md);
+  color: var(--text-200);
+  font-size: 1.05rem;
+  cursor: pointer;
+  margin-right: 0.75rem;
+  flex-shrink: 0;
+  transition: var(--transition);
+}
+.nav-toggle-btn:hover { background: var(--bg-04); color: var(--text-100); }
+
+.sidebar-backdrop { display: none; }
 
 .nav-item {
   display: flex;
@@ -912,3 +932,86 @@ a:hover { color: var(--primary-300); }
 }
 .mini-table th { color: var(--text-300); font-weight: 600; }
 .mini-table td { color: var(--text-200); }
+
+
+/* ============================================================
+   20. RESPONSIVE / MOBILE
+   ============================================================ */
+
+/* Smoother touch scrolling for horizontally-scrollable regions */
+.table-container, .code-block { -webkit-overflow-scrolling: touch; }
+
+/* Tablet / small-laptop: sidebar becomes an off-canvas drawer */
+@media (max-width: 768px) {
+  .nav-toggle-btn { display: flex; }
+
+  .sidebar {
+    position: fixed;
+    top: 58px;
+    left: 0;
+    bottom: 0;
+    z-index: 250;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: var(--shadow-lg);
+    width: 220px;
+  }
+  .sidebar.open { transform: translateX(0); }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    top: 58px; left: 0; right: 0; bottom: 0;
+    background: rgba(4,7,14,0.6);
+    z-index: 240;
+    animation: fadeIn 0.15s ease;
+  }
+
+  .page-content { padding: 1.5rem 1.25rem; }
+}
+
+/* Phones */
+@media (max-width: 640px) {
+  html { font-size: 14px; }
+
+  .topbar { padding: 0 0.85rem; }
+  .brand-text { font-size: 1rem; }
+  .user-chip { padding: 0.25rem 0.6rem 0.25rem 0.3rem; }
+  .user-name { display: none; }
+
+  .page-content { padding: 1.1rem 0.85rem; gap: 1.1rem; }
+  .page-title { font-size: 1.3rem; }
+
+  .page-title-row { flex-direction: column; align-items: stretch; }
+  .page-title-row .btn { width: 100%; }
+
+  .glass-panel { padding: 1.25rem; }
+
+  /* Tables: drop secondary columns, tighten cells, keep horizontal scroll as fallback */
+  .col-hide-sm { display: none; }
+  .data-table th, .data-table td { padding: 0.65rem 0.75rem; font-size: 0.82rem; }
+
+  /* Detail modal */
+  .modal-overlay { padding: 0.75rem; }
+  .detail-header { padding: 1rem 1.15rem; }
+  .detail-body { padding: 1.1rem 1.15rem; gap: 1.1rem; }
+  .detail-meta { grid-template-columns: 1fr; }
+
+  /* Status tracker */
+  .status-node { width: 24px; height: 24px; font-size: 0.68rem; }
+  .status-label { font-size: 0.54rem; letter-spacing: 0.02em; }
+
+  /* Timeline rows can wrap instead of overflowing */
+  .timeline-header { flex-wrap: wrap; row-gap: 0.35rem; }
+  .timeline-header > div { min-width: 0; }
+  .timeline-header span { overflow-wrap: break-word; }
+
+  /* Login */
+  .login-hero { padding: 1.5rem 1.25rem; min-height: 200px; }
+  .login-tagline { font-size: 1.3rem; }
+  .login-form-side { padding: 1.5rem 1rem; }
+  .login-card { padding: 1.25rem; }
+  .preset-grid { gap: 0.5rem; }
+  .preset-card { padding: 0.7rem 0.4rem; }
+  .preset-desc { display: none; }
+}

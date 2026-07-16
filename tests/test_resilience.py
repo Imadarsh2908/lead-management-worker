@@ -1,3 +1,4 @@
+
 """
 tests/test_resilience.py
 --------------------------
@@ -15,6 +16,8 @@ from app.core.resilience import (
     call_enrichment_api,
     safe_enrich_domain,
     parse_llm_json_response,
+    call_llm_completion,
+    _get_llm_breaker,
     crm_breaker,
     enrichment_breaker,
 )
@@ -93,6 +96,60 @@ def test_safe_update_crm_fallbacks():
         assert result == "ESCALATE_TO_HUMAN"
 
     crm_breaker.close()
+
+
+def test_llm_breaker_is_per_model_not_shared():
+    """
+    REGRESSION: the LLM circuit breaker used to be a single instance shared by
+    every model in the fallback chain, so a failing PRIMARY model would trip
+    it and then block calls to the FALLBACK model too — even though the
+    fallback model never got a real chance to run (this is what production
+    was observed doing: both models in the chain failing with the identical
+    "CircuitBreakerError: Timeout not elapsed yet" message). Each model must
+    get its own independent breaker.
+    """
+    import httpx
+    from openai import APIConnectionError
+    from app.core.policy import get_policy
+
+    bad_model = "bad-model-regression-test"
+    good_model = "good-model-regression-test"
+    fail_max = get_policy().resilience.llm_breaker.fail_max
+
+    # Fresh breaker state for these test-only model names.
+    _get_llm_breaker(bad_model).close()
+    _get_llm_breaker(good_model).close()
+
+    bad_client = Mock()
+    bad_client.chat.completions.create.side_effect = APIConnectionError(
+        request=httpx.Request("POST", "https://example.invalid")
+    )
+
+    with patch("time.sleep", return_value=None):
+        # Trip the BAD model's breaker. pybreaker raises CircuitBreakerError
+        # (not the original exception) specifically for the call that crosses
+        # the failure threshold, so accept either on each iteration.
+        for _ in range(fail_max):
+            with pytest.raises((APIConnectionError, CircuitBreakerError)):
+                call_llm_completion(bad_client, bad_model, [{"role": "user", "content": "hi"}], timeout_seconds=5)
+
+    assert _get_llm_breaker(bad_model).current_state == STATE_OPEN
+
+    # Further calls to the BAD model fail instantly via its own breaker.
+    with pytest.raises(CircuitBreakerError):
+        call_llm_completion(bad_client, bad_model, [{"role": "user", "content": "hi"}], timeout_seconds=5)
+
+    # A DIFFERENT model must be completely unaffected and succeed normally.
+    good_client = Mock()
+    good_client.chat.completions.create.return_value = Mock(
+        message=None, choices=[Mock(message=Mock(content='{"ok": true}'))]
+    )
+    result = call_llm_completion(good_client, good_model, [{"role": "user", "content": "hi"}], timeout_seconds=5)
+    assert result == '{"ok": true}'
+    assert _get_llm_breaker(good_model).current_state != STATE_OPEN
+
+    _get_llm_breaker(bad_model).close()
+    _get_llm_breaker(good_model).close()
 
 
 def test_safe_enrich_domain_graceful_degradation():

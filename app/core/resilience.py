@@ -62,11 +62,10 @@ enrichment_breaker = CircuitBreaker(
 # so intentionally not in policy.yaml). Fail fast to protect connection pools.
 db_breaker = CircuitBreaker(fail_max=3, reset_timeout=30)
 
-# LLM circuit breaker — protects us (and our spend) when the model endpoint is unhealthy.
-llm_breaker = CircuitBreaker(
-    fail_max=_policy.resilience.llm_breaker.fail_max,
-    reset_timeout=_policy.resilience.llm_breaker.reset_timeout,
-)
+# NOTE: the LLM circuit breaker is intentionally NOT a single shared instance —
+# see _get_llm_breaker() below, which creates one breaker PER MODEL. A shared
+# breaker would let one unhealthy model (e.g. a rate-limited free tier) trip
+# it and then block every other model in the fallback chain too.
 
 
 # ─────────────────────────────────────────────────────────────
@@ -167,8 +166,9 @@ def safe_enrich_domain(domain: str) -> Dict:
 # ─────────────────────────────────────────────────────────────
 # SCENARIO 2b: LLM Chat Completion
 # Strategy: Exponential Backoff (network errors only) + Circuit Breaker
-# Mirrors the enrichment pattern: a decorated low-level call that the caller
-# wraps with its own fallback (see app/agents/llm_scorer.py).
+# Per-model circuit breaker (see _get_llm_breaker) — the caller (llm_scorer.py)
+# walks a chain of models on failure, and each model's health is tracked
+# independently so one bad model can't block the others.
 # ─────────────────────────────────────────────────────────────
 
 # openai exposes typed network errors; import lazily-safe at module load since
@@ -182,24 +182,35 @@ except ImportError:  # pragma: no cover - openai should be installed
     LLM_RETRYABLE_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
 
 
-@llm_breaker
+# Per-model circuit breakers, created lazily and cached. A SHARED breaker
+# across the whole model chain would mean one unhealthy model (e.g. a
+# rate-limited free tier) trips it and then blocks every OTHER model in the
+# fallback chain too — defeating the entire point of having a fallback chain.
+# Each model gets its own independent breaker instance instead.
+_llm_breakers: Dict[str, CircuitBreaker] = {}
+
+
+def _get_llm_breaker(model: str) -> CircuitBreaker:
+    breaker = _llm_breakers.get(model)
+    if breaker is None:
+        breaker = CircuitBreaker(
+            fail_max=_policy.resilience.llm_breaker.fail_max,
+            reset_timeout=_policy.resilience.llm_breaker.reset_timeout,
+        )
+        _llm_breakers[model] = breaker
+    return breaker
+
+
 @retry(
     stop=stop_after_attempt(3),   # 1 initial attempt + 2 retries
     wait=wait_exponential(multiplier=1, min=1, max=8),
     retry=retry_if_exception_type(LLM_RETRYABLE_ERRORS),
     reraise=True,
 )
-def call_llm_completion(client, model: str, messages: list, timeout_seconds: int,
-                        use_json_format: bool = True) -> str:
-    """
-    Executes a single chat completion against an OpenAI-compatible endpoint and
-    returns the assistant message content as a raw string.
-
-    Resilience: retried up to twice on network errors (exponential backoff) and
-    guarded by llm_breaker. Deterministic errors (bad request, auth, rate-limit
-    payloads that raise non-network errors) propagate immediately so the caller
-    can fall back rather than hammer the endpoint.
-    """
+def _call_llm_completion_uncircuited(client, model: str, messages: list, timeout_seconds: int,
+                                     use_json_format: bool = True) -> str:
+    """The actual network call, retried on transient errors. Never call this
+    directly — go through call_llm_completion() so the per-model breaker applies."""
     kwargs: Dict[str, Any] = {"model": model, "messages": messages, "timeout": timeout_seconds}
     if use_json_format:
         # Most OpenRouter instruct models honor this; if one doesn't, the request
@@ -209,6 +220,25 @@ def call_llm_completion(client, model: str, messages: list, timeout_seconds: int
     logger.info(f"Calling LLM: model={model}, json_mode={use_json_format}")
     response = client.chat.completions.create(**kwargs)
     return response.choices[0].message.content or ""
+
+
+def call_llm_completion(client, model: str, messages: list, timeout_seconds: int,
+                        use_json_format: bool = True) -> str:
+    """
+    Executes a single chat completion against an OpenAI-compatible endpoint and
+    returns the assistant message content as a raw string.
+
+    Resilience: retried up to twice on network errors (exponential backoff) and
+    guarded by a circuit breaker SCOPED TO THIS MODEL (see _get_llm_breaker) —
+    a failing primary model can trip its own breaker without blocking calls to
+    a different fallback model. Deterministic errors (bad request, auth,
+    rate-limit payloads that raise non-network errors) propagate immediately so
+    the caller can fall back rather than hammer the endpoint.
+    """
+    breaker = _get_llm_breaker(model)
+    return breaker.call(
+        _call_llm_completion_uncircuited, client, model, messages, timeout_seconds, use_json_format
+    )
 
 
 # ─────────────────────────────────────────────────────────────

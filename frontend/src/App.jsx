@@ -23,11 +23,12 @@ function NavItem({ icon, label, active, onClick, disabled }) {
 }
 
 /* ─── Top Header bar ─────────────────────────────────── */
-function Header() {
+function Header({ onToggleNav }) {
   const { user, signOut } = useAuth();
   return (
     <header className="topbar">
       <div className="topbar-left">
+        <button className="nav-toggle-btn" onClick={onToggleNav} aria-label="Toggle navigation">☰</button>
         <div className="brand">
           <span className="brand-icon">⚡</span>
           <span className="brand-text">Lead Flow AI</span>
@@ -46,10 +47,10 @@ function Header() {
 }
 
 /* ─── Sidebar ─────────────────────────────────────────── */
-function Sidebar({ view, setView }) {
+function Sidebar({ view, setView, open }) {
   const { canViewLeads, canManageUsers } = useAuth();
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${open ? 'open' : ''}`}>
       <NavItem icon="📊" label="Dashboard"     active={view === 'dashboard'} onClick={() => setView('dashboard')} disabled={!canViewLeads} />
       <NavItem icon="➕" label="Ingest Lead"   active={view === 'ingest'}    onClick={() => setView('ingest')} />
       <NavItem icon="📥" label="Import Leads"  active={view === 'import'}    onClick={() => setView('import')} />
@@ -65,16 +66,23 @@ function Shell() {
   const { canViewLeads, canManageUsers } = useAuth();
   const [view, setView]           = useState(canViewLeads ? 'dashboard' : 'ingest');
   const [detailId, setDetailId]   = useState(null);
+  const [navOpen, setNavOpen]     = useState(false);
 
   const handleLeadSubmitted = (id) => {
     setDetailId(id);
   };
 
+  const handleSetView = (v) => {
+    setView(v);
+    setNavOpen(false);
+  };
+
   return (
     <div className="app-shell">
-      <Header />
+      <Header onToggleNav={() => setNavOpen(o => !o)} />
       <div className="shell-body">
-        <Sidebar view={view} setView={setView} />
+        <Sidebar view={view} setView={handleSetView} open={navOpen} />
+        {navOpen && <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} />}
         <main className="shell-main">
           {view === 'dashboard' && canViewLeads && (
             <div className="page-content">

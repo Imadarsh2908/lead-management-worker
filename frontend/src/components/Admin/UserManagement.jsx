@@ -156,7 +156,7 @@ export default function UserManagement() {
                   <th>Username</th>
                   <th>Role</th>
                   <th>Status</th>
-                  <th>Last Login</th>
+                  <th className="col-hide-sm">Last Login</th>
                   <th style={{ textAlign: 'right' }}>Action</th>
                 </tr>
               </thead>
@@ -170,7 +170,7 @@ export default function UserManagement() {
                       </td>
                       <td style={{ fontSize: '0.88rem' }}>{u.role}</td>
                       <td><Badge value={u.is_active ? 'ACTIVE' : 'REVOKED'} /></td>
-                      <td style={{ fontSize: '0.82rem', color: 'hsl(var(--text-secondary))' }}>{fmt(u.last_login_at)}</td>
+                      <td className="col-hide-sm" style={{ fontSize: '0.82rem', color: 'hsl(var(--text-secondary))' }}>{fmt(u.last_login_at)}</td>
                       <td style={{ textAlign: 'right' }}>
                         {u.is_active ? (
                           <button
