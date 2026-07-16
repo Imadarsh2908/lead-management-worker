@@ -17,6 +17,15 @@
 # the platform (Render/Cloud Run/docker) manages the process lifecycle — and
 # this feature is a known source of "Permission denied" errors and even
 # restart loops on minimal/restricted-permission containers. Disabled outright.
+
+# Apply any pending Alembic migrations before serving traffic. Without this,
+# a migration can sit committed-but-unapplied against the production database
+# indefinitely (see e.g. revision 0002, which added a Postgres enum value that
+# the running app depended on but the deployed DB didn't have yet, causing
+# 500s on every request that touched it). alembic/env.py reads the same
+# DATABASE_URL as the app, so this targets whatever DB this container talks to.
+alembic upgrade head
+
 exec gunicorn app.main:app \
     -w 4 \
     -k uvicorn.workers.UvicornWorker \
