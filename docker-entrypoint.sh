@@ -25,7 +25,14 @@ set -e
 # the running app depended on but the deployed DB didn't have yet, causing
 # 500s on every request that touched it). alembic/env.py reads the same
 # DATABASE_URL as the app, so this targets whatever DB this container talks to.
-alembic upgrade head
+#
+# Run as `python -m scripts.run_migrations`, not the bare `alembic` command:
+# -m puts the cwd (/app) on sys.path, which both `app.core.database` and
+# `alembic.ini`'s relative script_location need. The wrapper script also
+# auto-stamps revision 0001 on first run against a database that already has
+# the pre-Alembic schema (created by create_all_tables()) but no
+# alembic_version row yet — see scripts/run_migrations.py for why.
+python -m scripts.run_migrations
 
 exec gunicorn app.main:app \
     -w 4 \
