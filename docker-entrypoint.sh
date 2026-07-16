@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 # docker-entrypoint.sh
 # ---------------------
 # Most PaaS hosts (Render, Cloud Run, Heroku-style platforms) assign a random
