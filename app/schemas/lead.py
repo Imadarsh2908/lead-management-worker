@@ -14,7 +14,7 @@ This protects against:
 """
 import uuid
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
@@ -113,4 +113,67 @@ class AuditLogResponse(BaseModel):
     llm_reasoning: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
     created_at: datetime
+
+
+# ─────────────────────────────────────────────────────────────
+# SCHEDULED EMAIL SCHEMAS
+# ─────────────────────────────────────────────────────────────
+
+class ScheduleEmailRequest(BaseModel):
+    """Payload for scheduling a follow-up email to a lead at a future time."""
+    subject: str = Field(..., min_length=1, max_length=500)
+    body: str = Field(..., min_length=1, max_length=10000)
+    scheduled_at: datetime = Field(
+        ...,
+        description="When to send (ISO 8601). Include a timezone offset, e.g. "
+                    "2026-08-01T09:30:00+05:30; it is normalized to UTC server-side.",
+    )
+    # Optional override; defaults to the lead's own email if omitted.
+    to_email: Optional[EmailStr] = Field(
+        default=None,
+        description="Recipient. Defaults to the lead's stored email if not given.",
+    )
+
+
+class ScheduledEmailResponse(BaseModel):
+    """Outbound view of a scheduled email."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    lead_id: uuid.UUID
+    to_email: str
+    subject: str
+    scheduled_at: datetime
+    status: str
+    attempts: int
+    last_error: Optional[str] = None
+    sent_at: Optional[datetime] = None
+    created_at: datetime
+
+
+# ─────────────────────────────────────────────────────────────
+# BULK IMPORT SCHEMAS
+# ─────────────────────────────────────────────────────────────
+
+class PasteImportRequest(BaseModel):
+    """Payload for importing leads from pasted text (CSV or JSON)."""
+    format: Literal["csv", "json"] = Field(..., description="Format of `data`.")
+    data: str = Field(..., min_length=1, description="Raw CSV (with header row) or JSON (array of objects).")
+
+
+class ImportRowError(BaseModel):
+    """One row that couldn't be imported, with a human-readable reason."""
+    row: int = Field(..., description="1-based row number in the source (data rows, header excluded).")
+    email: Optional[str] = None
+    reason: str
+
+
+class ImportSummaryResponse(BaseModel):
+    """Outcome of a bulk import — partial success is normal and fully reported."""
+    total: int = Field(..., description="Rows found in the source.")
+    created: int
+    skipped_duplicates: int
+    errors: int
+    created_ids: List[uuid.UUID] = Field(default_factory=list)
+    error_details: List[ImportRowError] = Field(default_factory=list)
 

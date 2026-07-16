@@ -62,6 +62,14 @@ class AuditActionType(str, PyEnum):
     SYSTEM_ERROR = "SYSTEM_ERROR"           # An unexpected exception occurred
 
 
+class EmailStatus(str, PyEnum):
+    PENDING = "PENDING"       # Queued, scheduled_at not yet reached (or not yet claimed)
+    SENDING = "SENDING"       # Claimed by a dispatcher worker; send in progress
+    SENT = "SENT"             # Delivered to the SMTP server successfully
+    FAILED = "FAILED"         # Exhausted max attempts; needs attention
+    CANCELLED = "CANCELLED"   # Cancelled before it was sent
+
+
 # ─────────────────────────────────────────────────────────────
 # TABLE 1: Lead
 # The primary entity — stores contact info and AI-determined priority.
@@ -208,4 +216,55 @@ class AuditLog(BaseModel):
             "tool_outputs",
             postgresql_using="gin",
         ),
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# TABLE 4: ScheduledEmail
+# A follow-up email queued to be sent to a lead at a specific time.
+# The background scheduler (app/core/scheduler.py) polls this table and hands
+# due rows to the mailer (app/core/mailer.py).
+# ─────────────────────────────────────────────────────────────
+
+class ScheduledEmail(BaseModel):
+    __tablename__ = "scheduled_emails"
+
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("leads.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+
+    # Snapshotted at schedule time so an email still sends correctly even if the
+    # lead's contact address is later edited or the lead is soft-deleted.
+    to_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    body: Mapped[str] = mapped_column(String(10000), nullable=False)
+
+    # When the email becomes eligible to send. Stored as NAIVE UTC by convention
+    # (not timezone=True): SQLite returns naive datetimes and Postgres returns
+    # aware ones, so mixing them breaks comparisons — standardizing on naive-UTC
+    # keeps the dispatcher's `scheduled_at <= utcnow()` filter identical on both.
+    # The API layer converts any tz-aware input to naive UTC before storing.
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)
+
+    status: Mapped[EmailStatus] = mapped_column(
+        Enum(EmailStatus, name="email_status_enum"),
+        default=EmailStatus.PENDING,
+        index=True,
+        nullable=False,
+    )
+
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # naive UTC
+
+    # ── Relationship ─────────────────────────────────────
+    lead: Mapped["Lead"] = relationship("Lead")
+
+    # ── Indexes ──────────────────────────────────────────
+    # The dispatcher's hot query is "PENDING rows due now", so index (status, scheduled_at).
+    __table_args__ = (
+        Index("ix_scheduled_emails_due", "status", "scheduled_at"),
     )

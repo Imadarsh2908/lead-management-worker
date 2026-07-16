@@ -135,4 +135,30 @@ export const api = {
       method: 'DELETE',
     });
   },
+
+  // Bulk import from pasted CSV/JSON text.
+  importLeadsPaste: (format, data) => {
+    return request('/v1/leads/import/paste', {
+      method: 'POST',
+      body: JSON.stringify({ format, data }),
+    });
+  },
+
+  // Bulk import from an uploaded .csv/.xlsx file. Uses FormData, so we do NOT
+  // set Content-Type — the browser adds the correct multipart boundary itself.
+  importLeadsFile: async (file) => {
+    const token = localStorage.getItem('access_token');
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch(`${API_BASE}/v1/leads/import/file`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: fd,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Upload failed.' }));
+      throw new Error(err.detail || err.error || 'Upload failed.');
+    }
+    return res.json();
+  },
 };

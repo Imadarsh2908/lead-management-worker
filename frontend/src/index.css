@@ -818,3 +818,68 @@ a:hover { color: var(--primary-300); }
   from { background-position: -400px 0; }
   to   { background-position: 400px 0; }
 }
+
+/* ── Import Leads UI (file/paste tabs, results, email webhook panel) ── */
+.tab-row {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border-glass);
+}
+.tab-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-200);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  font-weight: 500;
+  padding: 0.6rem 0.9rem;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.tab-btn:hover { color: var(--text-100); }
+.tab-btn.active {
+  color: var(--primary-300);
+  border-bottom-color: var(--primary-500);
+}
+.tab-btn:focus-visible { outline: 2px solid var(--primary-500); outline-offset: 2px; }
+
+.hint-text {
+  color: var(--text-300);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  margin-top: 0.5rem;
+}
+.hint-text code {
+  background: var(--bg-04);
+  border-radius: var(--r-sm);
+  color: var(--text-100);
+  font-size: 0.72rem;
+  padding: 0.05rem 0.35rem;
+}
+
+.code-block {
+  background: var(--bg-00);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--r-md);
+  color: var(--accent-400);
+  font-size: 0.78rem;
+  overflow-x: auto;
+  padding: 0.75rem 1rem;
+}
+
+.mini-table {
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  width: 100%;
+}
+.mini-table th,
+.mini-table td {
+  border-bottom: 1px solid var(--border-glass);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+.mini-table th { color: var(--text-300); font-weight: 600; }
+.mini-table td { color: var(--text-200); }

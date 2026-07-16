@@ -42,10 +42,11 @@ async def lifespan(app: FastAPI):
     Startup sequence:
       1. Configure structured JSON logging
       2. Create DB tables (idempotent — safe to run on every startup)
-      3. Application begins accepting requests
-    
+      3. Start the background scheduler (scheduled-email dispatcher)
+      4. Application begins accepting requests
+
     Shutdown sequence:
-      4. Any cleanup (close DB pools, flush log buffers, etc.)
+      5. Stop the scheduler, then any other cleanup
     """
     # ── STARTUP ──────────────────────────────────────
     setup_logging()
@@ -59,11 +60,17 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Running in testing environment - skipping database table creation.")
 
+    # Start the scheduled-email dispatcher (no-op in the testing environment).
+    from app.core.scheduler import start_scheduler
+    start_scheduler()
+
     logger.info("Application startup complete. Ready to accept requests.")
     yield  # <── The application runs while blocked here
 
     # ── SHUTDOWN ──────────────────────────────────────
     logger.info("Application shutting down. Cleaning up resources...")
+    from app.core.scheduler import stop_scheduler
+    stop_scheduler()
 
 
 # ─────────────────────────────────────────────────────────────

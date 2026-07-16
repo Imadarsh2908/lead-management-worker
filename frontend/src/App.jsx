@@ -5,6 +5,7 @@ import StatsOverview from './components/Dashboard/StatsOverview';
 import LeadTable from './components/Dashboard/LeadTable';
 import LeadForm from './components/Leads/LeadForm';
 import LeadDetail from './components/Leads/LeadDetail';
+import ImportLeads from './components/Leads/ImportLeads';
 
 /* ─── Sidebar nav items ──────────────────────────────── */
 function NavItem({ icon, label, active, onClick, disabled }) {
@@ -50,6 +51,7 @@ function Sidebar({ view, setView }) {
     <aside className="sidebar">
       <NavItem icon="📊" label="Dashboard"     active={view === 'dashboard'} onClick={() => setView('dashboard')} disabled={!canViewLeads} />
       <NavItem icon="➕" label="Ingest Lead"   active={view === 'ingest'}    onClick={() => setView('ingest')} />
+      <NavItem icon="📥" label="Import Leads"  active={view === 'import'}    onClick={() => setView('import')} />
     </aside>
   );
 }
@@ -90,6 +92,12 @@ function Shell() {
           {view === 'ingest' && (
             <div className="page-content">
               <LeadForm onLeadSubmitted={handleLeadSubmitted} />
+            </div>
+          )}
+
+          {view === 'import' && (
+            <div className="page-content">
+              <ImportLeads />
             </div>
           )}
         </main>

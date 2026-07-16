@@ -86,6 +86,37 @@ class Settings(BaseSettings):
     CRM_API_URL: str = "https://api.your-crm.com/v1"
     SLACK_WEBHOOK_URL: str = ""
 
+    # ── Email (SMTP) ──────────────────────────────────────
+    # When EMAIL_ENABLED is False the mailer runs in DRY-RUN mode: it logs the
+    # message it *would* send instead of opening an SMTP connection. This keeps
+    # local/dev/demo runs working with zero mail config — flip it on and fill in
+    # the SMTP_* values (e.g. a Gmail App Password) to send for real.
+    EMAIL_ENABLED: bool = False
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: SecretStr = SecretStr("")
+    SMTP_USE_TLS: bool = True   # STARTTLS on 587; set False + port 465 for implicit SSL
+    EMAIL_FROM: str = "Lead Flow AI <no-reply@example.com>"
+
+    # ── Lead import (bulk / inbound email) ────────────────
+    # Max rows accepted in a single file/paste import (guards against a huge
+    # upload spawning thousands of background workflows at once).
+    MAX_IMPORT_ROWS: int = 500
+    # Shared secret for the public inbound-email webhook. The webhook is INERT
+    # (returns 404) unless this is set AND the request presents the matching
+    # token — so an unconfigured deployment exposes no open lead-injection hole.
+    INBOUND_EMAIL_TOKEN: SecretStr = SecretStr("")
+
+    # ── Scheduler (APScheduler) ───────────────────────────
+    # The background scheduler polls for due scheduled emails and dispatches
+    # them. Disabled automatically in the test environment (see scheduler.py).
+    SCHEDULER_ENABLED: bool = True
+    # How often (seconds) to check for emails whose scheduled_at time has passed.
+    EMAIL_DISPATCH_INTERVAL_SECONDS: int = 60
+    # Max delivery attempts before a scheduled email is marked FAILED.
+    EMAIL_MAX_ATTEMPTS: int = 3
+
 
 # Global singleton instance — import this across the app
 settings = Settings()
