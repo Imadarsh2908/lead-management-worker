@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # NOTE: free tiers share upstream rate limits and can 429 under load; the
     # scorer degrades to the rule engine on any failure (source="rules_fallback").
     LLM_MODEL: str = "openai/gpt-oss-20b:free"
+    # Ordered, comma-separated fallback models tried (in order) when the primary
+    # LLM_MODEL fails — e.g. a free tier returns 429 / times out / yields
+    # unparseable JSON. Only after EVERY model in the chain fails does scoring
+    # drop to the deterministic rule engine. Default gives one free backup so a
+    # rate-limited primary still scores with an LLM instead of falling to rules.
+    # Set to "" to disable failover (single-model behavior).
+    LLM_FALLBACK_MODELS: str = "nvidia/nemotron-nano-9b-v2:free"
     LLM_API_KEY: SecretStr = SecretStr("not-set")
     LLM_TIMEOUT_SECONDS: int = 20
     LLM_ENABLED: bool = True
@@ -84,6 +91,21 @@ class Settings(BaseSettings):
         if self.LLM_API_KEY.get_secret_value() not in ("", "not-set"):
             return self.LLM_API_KEY
         return self.OPENAI_API_KEY
+
+    @property
+    def llm_model_chain(self) -> list:
+        """
+        The ordered list of models the scorer tries: the primary LLM_MODEL
+        first, then each LLM_FALLBACK_MODELS entry, de-duplicated. A single-item
+        chain (no fallbacks configured) reproduces the original single-model
+        behavior exactly.
+        """
+        chain = [self.LLM_MODEL]
+        for m in self.LLM_FALLBACK_MODELS.split(","):
+            m = m.strip()
+            if m and m not in chain:
+                chain.append(m)
+        return chain
 
     # ── External Tool APIs ────────────────────────────────
     ENRICHMENT_API_URL: str = "https://api.example-enrichment.com/v1/company"

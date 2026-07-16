@@ -106,14 +106,15 @@ def _get_client():
     )
 
 
-def _raw_completion(messages: List[Dict[str, str]]) -> str:
+def _raw_completion(messages: List[Dict[str, str]], model: str = "") -> str:
     """
-    Returns the raw assistant text for `messages`. This is the ONE network seam;
-    unit tests monkeypatch this function so nothing touches the wire.
+    Returns the raw assistant text for `messages` from `model` (defaults to the
+    primary LLM_MODEL). This is the ONE network seam; unit tests monkeypatch
+    this function so nothing touches the wire.
     """
     return call_llm_completion(
         client=_get_client(),
-        model=settings.LLM_MODEL,
+        model=model or settings.LLM_MODEL,
         messages=messages,
         timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
         use_json_format=True,
@@ -226,34 +227,31 @@ def _rules_fallback(context: dict, reason: str) -> ScoringResult:
 # PUBLIC ENTRY POINT
 # ─────────────────────────────────────────────────────────────
 
-def score_lead(context: dict) -> ScoringResult:
+class _ModelAttemptFailed(Exception):
     """
-    Score a single lead with the LLM, self-correcting once on malformed JSON and
-    degrading to the rule engine on any hard failure.
-
-    See module docstring for the full call sequence. The returned result carries
-    an observability payload on `result._exchange` for the graph's audit trail.
+    One model in the chain failed to produce a usable score — a transport error
+    (429 / timeout / breaker open), or unparseable JSON even after the
+    self-correction re-prompt. The caller catches this and tries the next model.
     """
-    if not settings.LLM_ENABLED:
-        return _rules_fallback(context, "LLM_ENABLED=false")
 
-    system_prompt = get_system_prompt()
-    user_message = _build_user_message(context)
-    prompt_excerpt = user_message[:500]
-    prompt_hash = hashlib.sha256(
-        (system_prompt + user_message).encode("utf-8")
-    ).hexdigest()
 
-    messages: List[Dict[str, str]] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message},
-    ]
+def _score_with_model(model: str, base_messages: List[Dict[str, str]],
+                      prompt_hash: str, prompt_excerpt: str) -> ScoringResult:
+    """
+    Try to get a validated ScoringResult from ONE model: initial call, then a
+    single self-correcting re-prompt on malformed JSON. Raises _ModelAttemptFailed
+    on any failure so score_lead can fail over to the next model in the chain.
+
+    Works on a LOCAL copy of base_messages — a failed model's re-prompt turns
+    never leak into the next model's conversation.
+    """
+    messages = list(base_messages)
 
     # ── Attempt 1 ────────────────────────────────────────────
     try:
-        raw = _raw_completion(messages)
-    except Exception as e:  # network error, breaker open, retries exhausted, etc.
-        return _rules_fallback(context, f"llm_call_failed: {type(e).__name__}: {e}")
+        raw = _raw_completion(messages, model)
+    except Exception as e:  # network error, breaker open, retries exhausted, 429, etc.
+        raise _ModelAttemptFailed(f"llm_call_failed: {type(e).__name__}: {e}")
 
     raw = _maybe_corrupt(raw)  # demo knob; no-op unless forced
     first_parse = parse_llm_json_response(raw)
@@ -262,9 +260,10 @@ def score_lead(context: dict) -> ScoringResult:
         try:
             result = _to_result(first_parse["data"], source="llm")
         except (ValueError, TypeError) as e:
-            return _rules_fallback(context, f"invalid_llm_payload: {e}")
+            raise _ModelAttemptFailed(f"invalid_llm_payload: {e}")
         result._exchange = {
             "source": "llm",
+            "model": model,
             "prompt_hash": prompt_hash,
             "prompt_excerpt": prompt_excerpt,
             "raw_response": raw,
@@ -272,33 +271,36 @@ def score_lead(context: dict) -> ScoringResult:
         }
         return result
 
-    # ── Attempt 2: self-correction re-prompt ─────────────────
-    logger.warning(f"[LLM] First response failed to parse: {first_parse['parse_error']}. Re-prompting.")
+    # ── Attempt 2: self-correction re-prompt (same model) ────
+    logger.warning(f"[LLM] {model}: first response failed to parse ({first_parse['parse_error']}). Re-prompting.")
     correction = (
         "Your previous response could not be parsed as JSON.\n"
         f"Parse error: {first_parse['parse_error']}\n"
         f"Your previous output was:\n{raw}\n\n"
         "Return ONLY the corrected, valid JSON object — no prose, no code fences."
     )
-    messages.append({"role": "assistant", "content": raw})
-    messages.append({"role": "user", "content": correction})
+    messages = messages + [
+        {"role": "assistant", "content": raw},
+        {"role": "user", "content": correction},
+    ]
 
     try:
-        raw2 = _raw_completion(messages)
+        raw2 = _raw_completion(messages, model)
     except Exception as e:
-        return _rules_fallback(context, f"llm_recall_failed: {type(e).__name__}: {e}")
+        raise _ModelAttemptFailed(f"llm_recall_failed: {type(e).__name__}: {e}")
 
     second_parse = parse_llm_json_response(raw2)
     if second_parse["parse_error"] is not None:
-        return _rules_fallback(context, f"json_parse_failed_twice: {second_parse['parse_error']}")
+        raise _ModelAttemptFailed(f"json_parse_failed_twice: {second_parse['parse_error']}")
 
     try:
         result = _to_result(second_parse["data"], source="llm_selfcorrected")
     except (ValueError, TypeError) as e:
-        return _rules_fallback(context, f"invalid_llm_payload_after_correction: {e}")
+        raise _ModelAttemptFailed(f"invalid_llm_payload_after_correction: {e}")
 
     result._exchange = {
         "source": "llm_selfcorrected",
+        "model": model,
         "prompt_hash": prompt_hash,
         "prompt_excerpt": prompt_excerpt,
         "raw_response": raw2,
@@ -306,3 +308,37 @@ def score_lead(context: dict) -> ScoringResult:
         "parsed": second_parse["data"],
     }
     return result
+
+
+def score_lead(context: dict) -> ScoringResult:
+    """
+    Score a single lead with the LLM. Tries each model in settings.llm_model_chain
+    (primary + fallbacks) in order; the first that returns a usable, validated
+    result wins. Only if EVERY model fails does it degrade to the rule engine.
+
+    The returned result carries an observability payload on `result._exchange`
+    (including which `model` produced it) for the graph's audit trail.
+    """
+    if not settings.LLM_ENABLED:
+        return _rules_fallback(context, "LLM_ENABLED=false")
+
+    system_prompt = get_system_prompt()
+    user_message = _build_user_message(context)
+    prompt_excerpt = user_message[:500]
+    prompt_hash = hashlib.sha256((system_prompt + user_message).encode("utf-8")).hexdigest()
+    base_messages: List[Dict[str, str]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+
+    chain = settings.llm_model_chain
+    reasons = []
+    for i, model in enumerate(chain):
+        try:
+            return _score_with_model(model, base_messages, prompt_hash, prompt_excerpt)
+        except _ModelAttemptFailed as e:
+            reasons.append(f"{model}: {e}")
+            if i + 1 < len(chain):
+                logger.warning(f"[LLM] Model '{model}' failed ({e}); failing over to next model.")
+
+    return _rules_fallback(context, "all_models_failed: " + " | ".join(reasons))
