@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.api.dependencies import get_db, allow_all_roles, allow_sales_or_admin, allow_admin_only
 from app.core.database import Base
+from app.core.seed import seed_demo_users
 
 # Use SQLite in-memory database for tests — no Postgres needed!
 SQLALCHEMY_TEST_URL = "sqlite:///./test.db"
@@ -33,10 +34,11 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 def db_session():
     """Creates fresh database tables for each test, then drops them after."""
     # Import all models so Base.metadata is populated
-    from app.models import lead  # noqa: F401
+    from app.models import lead, user  # noqa: F401
     Base.metadata.create_all(bind=engine)
     db = TestingSessionLocal()
     try:
+        seed_demo_users(db)
         yield db
     finally:
         db.close()

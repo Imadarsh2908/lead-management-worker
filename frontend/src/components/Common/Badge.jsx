@@ -21,6 +21,10 @@ const variantMap = {
   LLM_REASONING:    { cls: 'badge-purple',  label: 'LLM' },
   ESCALATION:       { cls: 'badge-high',    label: 'ESCALATION' },
   SYSTEM_ERROR:     { cls: 'badge-high',    label: 'ERROR' },
+  MANUAL_OVERRIDE:  { cls: 'badge-info',    label: 'MANUAL' },
+
+  ACTIVE:           { cls: 'badge-low',     label: 'ACTIVE' },
+  REVOKED:          { cls: 'badge-high',    label: 'REVOKED' },
 };
 
 export default function Badge({ value }) {

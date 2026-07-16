@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import Badge from '../Common/Badge';
 import Spinner from '../Common/Spinner';
 import Card from '../Common/Card';
+import ConfirmDialog from '../Common/ConfirmDialog';
 
 function Avatar({ name }) {
   const initials = (name || '?').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
@@ -29,6 +30,7 @@ export default function LeadTable({ onViewDetails }) {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const fetchLeads = useCallback(async () => {
     setLoading(true);
@@ -46,9 +48,14 @@ export default function LeadTable({ onViewDetails }) {
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
-  const handleDelete = async (e, id) => {
+  const requestDelete = (e, id) => {
     e.stopPropagation();
-    if (!confirm('Soft-delete this lead?')) return;
+    setConfirmDeleteId(id);
+  };
+
+  const confirmDelete = async () => {
+    const id = confirmDeleteId;
+    setConfirmDeleteId(null);
     try {
       await api.deleteLead(id);
       fetchLeads();
@@ -118,7 +125,7 @@ export default function LeadTable({ onViewDetails }) {
                     {canDeleteLeads && (
                       <td style={{ textAlign: 'right' }}>
                         <button className="btn btn-danger" style={{ padding: '0.3rem 0.7rem', fontSize: '0.78rem' }}
-                          onClick={e => handleDelete(e, lead.id)}>Delete</button>
+                          onClick={e => requestDelete(e, lead.id)}>Delete</button>
                       </td>
                     )}
                   </tr>
@@ -141,6 +148,15 @@ export default function LeadTable({ onViewDetails }) {
           </div>
         </>
       )}
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        title="Delete this lead?"
+        message="This soft-deletes the lead — it's removed from the pipeline but kept in the database for audit purposes."
+        confirmLabel="Delete"
+        danger
+        onConfirm={confirmDelete}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </Card>
   );
 }

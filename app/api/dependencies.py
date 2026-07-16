@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.models.user import User
 
 
 # ─────────────────────────────────────────────────────────────
@@ -49,14 +50,22 @@ security = HTTPBearer()
 
 def get_current_user_claims(
     credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
 ) -> dict:
     """
     Dependency: Decodes the JWT access token and returns the payload.
-    
+
+    Also checks the DB on every request so a revoked user is locked out
+    IMMEDIATELY — not just after their (short-lived) access token naturally
+    expires. This is a deliberate trade-off: one indexed lookup by username
+    per authenticated request, in exchange for revocation actually meaning
+    "revoked right now" rather than "revoked in up to 15 minutes".
+
     Raises 401 if:
       - Token is missing (handled by HTTPBearer above)
       - Token is expired
       - Token signature is invalid (tampered or wrong secret)
+      - The user no longer exists or their access has been revoked
     """
     token = credentials.credentials
     try:
@@ -65,13 +74,22 @@ def get_current_user_claims(
             settings.SECRET_KEY.get_secret_value(),
             algorithms=[settings.ALGORITHM],
         )
-        # 'sub' (subject) claim is required — it holds the user ID
-        user_id = payload.get("sub")
-        if user_id is None:
+        # 'sub' (subject) claim is required — it holds the username
+        username = payload.get("sub")
+        if username is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token: missing subject claim",
             )
+
+        user = db.query(User).filter(User.username == username).first()
+        if not user or user.is_deleted:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="This account's access has been revoked.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         return payload
 
     except JWTError as e:

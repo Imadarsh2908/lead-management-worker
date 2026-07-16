@@ -136,6 +136,14 @@ export const api = {
     });
   },
 
+  // Sales/Admin: manually assign a priority to a lead the AI left UNASSIGNED.
+  setLeadPriority: (leadId, priority) => {
+    return request(`/v1/leads/${leadId}/priority`, {
+      method: 'PATCH',
+      body: JSON.stringify({ priority }),
+    });
+  },
+
   // Bulk import from pasted CSV/JSON text.
   importLeadsPaste: (format, data) => {
     return request('/v1/leads/import/paste', {
@@ -161,4 +169,16 @@ export const api = {
     }
     return res.json();
   },
+
+  // Admin-only: who has access to the app, and creating/revoking/restoring it.
+  getUsers: () => request('/v1/users/'),
+
+  createUser: (username, password, role) => request('/v1/users/', {
+    method: 'POST',
+    body: JSON.stringify({ username, password, role }),
+  }),
+
+  revokeUserAccess: (userId) => request(`/v1/users/${userId}/revoke`, { method: 'PATCH' }),
+
+  restoreUserAccess: (userId) => request(`/v1/users/${userId}/restore`, { method: 'PATCH' }),
 };

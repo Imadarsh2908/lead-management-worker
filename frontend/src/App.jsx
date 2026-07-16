@@ -6,6 +6,7 @@ import LeadTable from './components/Dashboard/LeadTable';
 import LeadForm from './components/Leads/LeadForm';
 import LeadDetail from './components/Leads/LeadDetail';
 import ImportLeads from './components/Leads/ImportLeads';
+import UserManagement from './components/Admin/UserManagement';
 
 /* ─── Sidebar nav items ──────────────────────────────── */
 function NavItem({ icon, label, active, onClick, disabled }) {
@@ -46,19 +47,22 @@ function Header() {
 
 /* ─── Sidebar ─────────────────────────────────────────── */
 function Sidebar({ view, setView }) {
-  const { canViewLeads } = useAuth();
+  const { canViewLeads, canManageUsers } = useAuth();
   return (
     <aside className="sidebar">
       <NavItem icon="📊" label="Dashboard"     active={view === 'dashboard'} onClick={() => setView('dashboard')} disabled={!canViewLeads} />
       <NavItem icon="➕" label="Ingest Lead"   active={view === 'ingest'}    onClick={() => setView('ingest')} />
       <NavItem icon="📥" label="Import Leads"  active={view === 'import'}    onClick={() => setView('import')} />
+      {canManageUsers && (
+        <NavItem icon="🔐" label="User Access" active={view === 'users'} onClick={() => setView('users')} />
+      )}
     </aside>
   );
 }
 
 /* ─── Main shell (logged-in) ─────────────────────────── */
 function Shell() {
-  const { canViewLeads } = useAuth();
+  const { canViewLeads, canManageUsers } = useAuth();
   const [view, setView]           = useState(canViewLeads ? 'dashboard' : 'ingest');
   const [detailId, setDetailId]   = useState(null);
 
@@ -98,6 +102,12 @@ function Shell() {
           {view === 'import' && (
             <div className="page-content">
               <ImportLeads />
+            </div>
+          )}
+
+          {view === 'users' && canManageUsers && (
+            <div className="page-content">
+              <UserManagement />
             </div>
           )}
         </main>

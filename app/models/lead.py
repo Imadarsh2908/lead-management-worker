@@ -60,6 +60,7 @@ class AuditActionType(str, PyEnum):
     GUARDRAIL_OVERRIDE = "GUARDRAIL_OVERRIDE"  # A rule guardrail overrode the LLM (downgrade/escalate)
     ESCALATION = "ESCALATION"               # Lead was escalated to human
     SYSTEM_ERROR = "SYSTEM_ERROR"           # An unexpected exception occurred
+    MANUAL_OVERRIDE = "MANUAL_OVERRIDE"     # A human (Sales/Admin) manually set the priority
 
 
 class EmailStatus(str, PyEnum):

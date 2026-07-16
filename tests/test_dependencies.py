@@ -4,7 +4,8 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, get_current_user_claims, RoleChecker
-from app.core.security import create_access_token
+from app.core.security import create_access_token, get_password_hash
+from app.models.user import User
 
 
 def test_get_db():
@@ -18,14 +19,43 @@ def test_get_db():
         pass
 
 
-def test_get_current_user_claims_success():
+def test_get_current_user_claims_success(db_session):
+    db_session.add(User(username="user1", hashed_password=get_password_hash("x"), role="Admin"))
+    db_session.commit()
+
     # Create a valid token
     token = create_access_token(subject="user1", role="Admin")
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-    
-    claims = get_current_user_claims(creds)
+
+    claims = get_current_user_claims(creds, db=db_session)
     assert claims["sub"] == "user1"
     assert claims["role"] == "Admin"
+
+
+def test_get_current_user_claims_revoked_user_denied(db_session):
+    """A soft-deleted (revoked) user must be rejected even with a still-valid token."""
+    user = User(username="revoked1", hashed_password=get_password_hash("x"), role="Admin")
+    user.soft_delete()
+    db_session.add(user)
+    db_session.commit()
+
+    token = create_access_token(subject="revoked1", role="Admin")
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+
+    with pytest.raises(HTTPException) as exc:
+        get_current_user_claims(creds, db=db_session)
+    assert exc.value.status_code == 401
+    assert "revoked" in exc.value.detail.lower()
+
+
+def test_get_current_user_claims_unknown_user_denied(db_session):
+    """A token for a username that doesn't exist in the DB must be rejected."""
+    token = create_access_token(subject="ghost_user", role="Admin")
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+
+    with pytest.raises(HTTPException) as exc:
+        get_current_user_claims(creds, db=db_session)
+    assert exc.value.status_code == 401
 
 
 def test_get_current_user_claims_missing_sub():

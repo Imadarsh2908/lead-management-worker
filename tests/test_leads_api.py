@@ -8,7 +8,7 @@ import uuid
 from unittest.mock import patch
 import pytest
 
-from app.models.lead import Lead, WorkflowState, WorkflowStatus
+from app.models.lead import Lead, LeadPriority, WorkflowState, WorkflowStatus
 
 
 def test_create_lead_success(client, db_session):
@@ -166,3 +166,51 @@ def test_delete_lead_soft_delete(client, db_session):
     # Calling GET should now return 404 because GET filters active records
     response_get = client.get(f"/v1/leads/{lead.id}")
     assert response_get.status_code == 404
+
+
+def test_set_lead_priority_success_resolves_escalation(client, db_session):
+    """
+    PATCH /v1/leads/{id}/priority must let Sales/Admin manually resolve a lead
+    the AI left UNASSIGNED, and flip an ESCALATED workflow to COMPLETED.
+    """
+    lead = Lead(email="unassigned@test.com")  # defaults to LeadPriority.UNASSIGNED
+    db_session.add(lead)
+    db_session.flush()
+    wf_state = WorkflowState(lead_id=lead.id, current_status=WorkflowStatus.ESCALATED)
+    db_session.add(wf_state)
+    db_session.commit()
+
+    response = client.patch(f"/v1/leads/{lead.id}/priority", json={"priority": "HIGH"})
+    assert response.status_code == 200
+    assert response.json()["priority"] == "HIGH"
+
+    db_session.refresh(lead)
+    db_session.refresh(wf_state)
+    assert lead.priority.value == "HIGH"
+    assert wf_state.current_status == WorkflowStatus.COMPLETED
+
+
+def test_set_lead_priority_rejects_already_assigned(client, db_session):
+    """A lead that already has a real priority must not be manually overridable."""
+    lead = Lead(email="already-high@test.com", priority=LeadPriority.HIGH)
+    db_session.add(lead)
+    db_session.commit()
+
+    response = client.patch(f"/v1/leads/{lead.id}/priority", json={"priority": "LOW"})
+    assert response.status_code == 400
+    assert "only unassigned leads" in response.json()["detail"].lower()
+
+
+def test_set_lead_priority_invalid_value_rejected(client, db_session):
+    """SPAM/UNASSIGNED (or any non-HIGH/MEDIUM/LOW value) must be rejected by the schema."""
+    lead = Lead(email="invalid-priority@test.com")
+    db_session.add(lead)
+    db_session.commit()
+
+    response = client.patch(f"/v1/leads/{lead.id}/priority", json={"priority": "SPAM"})
+    assert response.status_code == 422
+
+
+def test_set_lead_priority_not_found(client, db_session):
+    response = client.patch(f"/v1/leads/{uuid.uuid4()}/priority", json={"priority": "MEDIUM"})
+    assert response.status_code == 404

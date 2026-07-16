@@ -5,36 +5,23 @@ Authentication endpoints:
   POST /v1/auth/login   — accepts username/password, returns access + refresh tokens
   POST /v1/auth/refresh — accepts a valid refresh token, returns a new access token
 
-Demo users (hardcoded for evaluation — replace with DB users in production):
-  admin_user / password123 → role: Admin
-  sales_user / password123 → role: Sales
-  operator_user / password123 → role: Operator
+Users are DB-backed (app/models/user.py). The three demo accounts
+(admin_user / sales_user / operator_user, all password "password123") are
+seeded automatically on startup — see app/core/seed.py.
 """
-from fastapi import APIRouter, HTTPException, status
-from jose import jwt, JWTError
+from datetime import datetime, timezone
 
+from fastapi import APIRouter, Depends, HTTPException, status
+from jose import jwt, JWTError
+from sqlalchemy.orm import Session
+
+from app.api.dependencies import get_db
 from app.core.config import settings
-from app.core.security import create_access_token, create_refresh_token
+from app.core.security import create_access_token, create_refresh_token, verify_password
+from app.models.user import User
 from app.schemas.lead import LoginRequest, RefreshTokenRequest, TokenResponse
 
-
 router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
-
-
-# ─────────────────────────────────────────────────────────────
-# DEMO USER STORE
-# In production: query the users table via get_db() dependency
-# and use verify_password(plain, hashed) from core/security.py
-# ─────────────────────────────────────────────────────────────
-
-# Password hash for "password123" using bcrypt
-_HASHED_PASSWORD = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
-
-DEMO_USERS = {
-    "admin_user":    {"hashed_password": _HASHED_PASSWORD, "role": "Admin"},
-    "sales_user":    {"hashed_password": _HASHED_PASSWORD, "role": "Sales"},
-    "operator_user": {"hashed_password": _HASHED_PASSWORD, "role": "Operator"},
-}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -46,32 +33,30 @@ DEMO_USERS = {
     response_model=TokenResponse,
     summary="Login and get access + refresh tokens",
     responses={
-        401: {"description": "Invalid username or password"},
+        401: {"description": "Invalid username or password, or access has been revoked"},
     },
 )
-def login(payload: LoginRequest):
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
     """
     Authenticates a user and returns a short-lived access token (15 min)
     and a long-lived refresh token (7 days).
-    
+
     The access token includes the user's role — used by RoleChecker on protected endpoints.
     The refresh token does NOT include the role (re-fetched from DB on refresh for security).
     """
-    user = DEMO_USERS.get(payload.username)
+    user = db.query(User).filter(User.username == payload.username).first()
 
-    # IMPORTANT: In production, use verify_password() from core/security.py
-    # to compare against the bcrypt hash. Hardcoded check here is for demo only.
-    if not user or payload.password != "password123":
+    if not user or user.is_deleted or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password.",
+            detail="Incorrect username or password, or this account's access has been revoked.",
         )
 
-    access_token = create_access_token(
-        subject=payload.username,
-        role=user["role"],
-    )
-    refresh_token = create_refresh_token(subject=payload.username)
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+
+    access_token = create_access_token(subject=user.username, role=user.role)
+    refresh_token = create_refresh_token(subject=user.username)
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -81,16 +66,18 @@ def login(payload: LoginRequest):
     response_model=TokenResponse,
     summary="Use a refresh token to get a new access token",
     responses={
-        401: {"description": "Invalid or expired refresh token"},
+        401: {"description": "Invalid/expired refresh token, or access has been revoked"},
     },
 )
-def refresh(payload: RefreshTokenRequest):
+def refresh(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
     """
     Validates the refresh token and issues a brand-new access token.
-    
+
     Security notes:
     - Uses the REFRESH_SECRET_KEY (different from ACCESS SECRET_KEY).
-    - Re-fetches the user's role from the DB to reflect any role changes since login.
+    - Re-fetches the user's role AND revocation status from the DB, so a
+      revoked account can no longer mint new access tokens even with a
+      still-valid refresh token.
     - The same refresh token is returned (no rotation for simplicity — add rotation in prod).
     """
     try:
@@ -106,16 +93,16 @@ def refresh(payload: RefreshTokenRequest):
         )
 
     username = token_data.get("sub")
-    user = DEMO_USERS.get(username)
+    user = db.query(User).filter(User.username == username).first()
 
-    if not user:
+    if not user or user.is_deleted:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User associated with this token no longer exists.",
+            detail="User associated with this token no longer exists or has been revoked.",
         )
 
     # Issue a new access token with the CURRENT role (may have changed since original login)
-    new_access_token = create_access_token(subject=username, role=user["role"])
+    new_access_token = create_access_token(subject=username, role=user.role)
 
     return TokenResponse(
         access_token=new_access_token,

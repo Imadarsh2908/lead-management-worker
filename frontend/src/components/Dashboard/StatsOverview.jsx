@@ -56,6 +56,8 @@ export default function StatsOverview() {
         accent="linear-gradient(135deg, #f87171, #fb923c)" />
       <StatCard label="Medium Priority" value={stats.medium} icon="⚡"
         accent="linear-gradient(135deg, #fbbf24, #a3e635)" />
+      <StatCard label="Low Priority" value={stats.low} icon="🧊"
+        accent="linear-gradient(135deg, #34d399, #22d3ee)" />
       <StatCard label="Pending Scoring" value={stats.unassigned} icon="⏳"
         accent="linear-gradient(135deg, #94a3b8, #64748b)" />
     </div>

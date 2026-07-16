@@ -6,7 +6,6 @@ import Card from '../Common/Card';
 const TABS = [
   { key: 'file', label: 'Upload file' },
   { key: 'paste', label: 'Paste data' },
-  { key: 'email', label: 'From email' },
 ];
 
 function ResultSummary({ result }) {
@@ -156,25 +155,6 @@ export default function ImportLeads() {
             <button className="btn btn-primary btn-full" onClick={submitPaste} disabled={loading}>
               {loading ? <><Spinner size={18} />&nbsp;Importing…</> : 'Import pasted rows →'}
             </button>
-          </div>
-        )}
-
-        {/* EMAIL */}
-        {tab === 'email' && (
-          <div style={{ marginTop: '1.25rem' }}>
-            <p style={{ marginBottom: '0.75rem' }}>
-              Leads can be created automatically from incoming emails — the sender
-              becomes a new lead. This runs through a secure webhook the backend exposes:
-            </p>
-            <pre className="code-block">POST {`{API_BASE}`}/v1/leads/inbound-email?token=YOUR_TOKEN</pre>
-            <p className="hint-text">
-              One-time setup (done in your email provider, not here): point a
-              <strong> SendGrid</strong> or <strong>Mailgun Inbound Parse</strong> route at the URL
-              above, and set <code>INBOUND_EMAIL_TOKEN</code> on the backend to match the
-              <code>?token=</code> value. Until that token is configured, the webhook stays
-              disabled (returns 404), so there's no open endpoint. Every email that arrives
-              at your parse address then shows up here as a lead.
-            </p>
           </div>
         )}
 

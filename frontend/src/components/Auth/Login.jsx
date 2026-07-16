@@ -82,7 +82,7 @@ export default function Login() {
           <p className="login-hint">Select a role to quick-connect, or enter credentials manually.</p>
 
           {/* Preset role cards */}
-          <div className="preset-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+          <div className="preset-grid">
             {PRESETS.map((p) => (
               <button
                 key={p.role}

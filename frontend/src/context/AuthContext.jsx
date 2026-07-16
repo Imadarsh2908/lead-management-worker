@@ -32,9 +32,14 @@ export function AuthProvider({ children }) {
 
   const canViewLeads = user?.role === 'Admin' || user?.role === 'Sales';
   const canDeleteLeads = user?.role === 'Admin';
+  const canManageUsers = user?.role === 'Admin';
+  const canReprioritizeLeads = user?.role === 'Admin' || user?.role === 'Sales';
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, signOut, canViewLeads, canDeleteLeads }}>
+    <AuthContext.Provider value={{
+      user, loading, login, signOut,
+      canViewLeads, canDeleteLeads, canManageUsers, canReprioritizeLeads,
+    }}>
       {children}
     </AuthContext.Provider>
   );

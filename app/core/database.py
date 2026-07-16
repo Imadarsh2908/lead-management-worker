@@ -54,5 +54,5 @@ def create_all_tables():
     Called on application startup. In production, prefer Alembic migrations.
     """
     # Import models here so Base.metadata is populated before create_all()
-    from app.models import lead  # noqa: F401
+    from app.models import lead, user  # noqa: F401
     Base.metadata.create_all(bind=engine)

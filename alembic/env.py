@@ -28,7 +28,7 @@ from app.core.database import Base
 
 # ── Import ALL models so Alembic can detect their tables ──────────────────
 # If you add a new model file, import it here too.
-from app.models import lead  # noqa: F401
+from app.models import lead, user  # noqa: F401
 
 # ── Alembic Config object ─────────────────────────────────────────────────
 config = context.config

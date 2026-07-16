@@ -78,3 +78,31 @@ def log_escalation(reason: str, confidence: float) -> None:
         reason=reason,
         confidence=confidence,
     ).warning(f"ESCALATION triggered: {reason} (confidence={confidence:.0%})")
+
+
+def log_user_created(admin_username: str, new_username: str, role: str) -> None:
+    """Logs an Admin creating a new user account."""
+    logger.bind(
+        event_type="user_created",
+        admin=admin_username,
+        new_user=new_username,
+        role=role,
+    ).info(f"User account CREATED: '{new_username}' (role={role}) by admin '{admin_username}'")
+
+
+def log_user_access_revoked(admin_username: str, target_username: str) -> None:
+    """Logs an Admin revoking another user's access."""
+    logger.bind(
+        event_type="user_access_revoked",
+        admin=admin_username,
+        target_user=target_username,
+    ).warning(f"User access REVOKED: '{target_username}' by admin '{admin_username}'")
+
+
+def log_user_access_restored(admin_username: str, target_username: str) -> None:
+    """Logs an Admin restoring a previously revoked user's access."""
+    logger.bind(
+        event_type="user_access_restored",
+        admin=admin_username,
+        target_user=target_username,
+    ).info(f"User access RESTORED: '{target_username}' by admin '{admin_username}'")

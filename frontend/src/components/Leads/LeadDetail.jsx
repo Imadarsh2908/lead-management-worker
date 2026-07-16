@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import Badge from '../Common/Badge';
 import Spinner from '../Common/Spinner';
+import ConfirmDialog from '../Common/ConfirmDialog';
 
 const STATUS_FLOW = ['RECEIVED', 'VALIDATING', 'ENRICHING', 'ANALYZING', 'EXECUTING'];
 const TERMINAL    = new Set(['COMPLETED', 'ESCALATED', 'FAILED']);
@@ -77,11 +79,15 @@ function TimelineEntry({ log }) {
 }
 
 export default function LeadDetail({ leadId, onClose }) {
+  const { canReprioritizeLeads } = useAuth();
   const [lead, setLead]       = useState(null);
   const [status, setStatus]   = useState(null);
   const [logs, setLogs]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
+  const [assigning, setAssigning] = useState(false);
+  const [assignError, setAssignError] = useState('');
+  const [confirmPriority, setConfirmPriority] = useState(null); // priority pending user confirmation, or null
   const intervalRef           = useRef(null);
 
   const refresh = async () => {
@@ -114,7 +120,25 @@ export default function LeadDetail({ leadId, onClose }) {
 
   const isActive = status && !TERMINAL.has(status.status);
 
+  const requestAssignPriority = (priority) => setConfirmPriority(priority);
+
+  const confirmAssignPriority = async () => {
+    const priority = confirmPriority;
+    setConfirmPriority(null);
+    setAssigning(true);
+    setAssignError('');
+    try {
+      await api.setLeadPriority(leadId, priority);
+      await refresh();
+    } catch (err) {
+      setAssignError(err.message || 'Failed to assign priority.');
+    } finally {
+      setAssigning(false);
+    }
+  };
+
   return (
+    <>
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal-content glass-panel detail-modal">
         {/* Modal Header */}
@@ -192,6 +216,28 @@ export default function LeadDetail({ leadId, onClose }) {
                   <div style={{ marginTop: '0.25rem' }}>
                     <Badge value={status?.status || 'RECEIVED'} />
                   </div>
+
+                  {lead.priority === 'UNASSIGNED' && canReprioritizeLeads && (
+                    <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-glass)' }}>
+                      <p style={{ fontSize: '0.75rem', color: 'hsl(var(--text-secondary))', marginBottom: '0.5rem' }}>
+                        AI wasn't confident enough to decide — assign it manually:
+                      </p>
+                      {assignError && <div className="alert alert-error" style={{ marginBottom: '0.5rem', fontSize: '0.78rem' }}>{assignError}</div>}
+                      <div style={{ display: 'flex', gap: '0.4rem' }}>
+                        {['HIGH', 'MEDIUM', 'LOW'].map(p => (
+                          <button
+                            key={p}
+                            className="btn btn-secondary"
+                            style={{ padding: '0.3rem 0.7rem', fontSize: '0.75rem', flex: 1 }}
+                            disabled={assigning}
+                            onClick={() => requestAssignPriority(p)}
+                          >
+                            {assigning ? <Spinner size={12} /> : p}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -218,5 +264,14 @@ export default function LeadDetail({ leadId, onClose }) {
         )}
       </div>
     </div>
+    <ConfirmDialog
+      open={confirmPriority !== null}
+      title="Assign priority?"
+      message={`Assign priority ${confirmPriority} to this lead? The AI wasn't confident enough to decide on its own — this marks it as resolved by you.`}
+      confirmLabel={`Assign ${confirmPriority}`}
+      onConfirm={confirmAssignPriority}
+      onCancel={() => setConfirmPriority(null)}
+    />
+    </>
   );
 }

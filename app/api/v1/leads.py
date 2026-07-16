@@ -17,6 +17,7 @@ Role requirements per endpoint:
   POST /leads    → All authenticated users (Admin, Sales, Operator)
   GET /leads/{id} → Admin + Sales
   GET /leads/    → Admin + Sales
+  PATCH /leads/{id}/priority → Admin + Sales (manually assign an UNASSIGNED lead's priority)
   DELETE /leads/{id} → Admin only (soft delete)
 """
 import uuid
@@ -32,11 +33,13 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_db, allow_all_roles, allow_sales_or_admin, allow_admin_only
 from app.core.config import settings
 from app.core.lead_import import parse_csv, parse_json, parse_xlsx, parse_inbound_email
-from app.models.lead import Lead, WorkflowState, WorkflowStatus, AuditLog, ScheduledEmail, EmailStatus
+from app.models.lead import (
+    Lead, LeadPriority, WorkflowState, WorkflowStatus, AuditLog, AuditActionType, ScheduledEmail, EmailStatus,
+)
 from app.schemas.lead import (
     LeadCreateRequest, LeadResponse, PaginatedLeadResponse, WorkflowStatusResponse,
     AuditLogResponse, ScheduleEmailRequest, ScheduledEmailResponse,
-    PasteImportRequest, ImportSummaryResponse, ImportRowError,
+    PasteImportRequest, ImportSummaryResponse, ImportRowError, LeadPriorityUpdateRequest,
 )
 
 router = APIRouter(prefix="/v1/leads", tags=["Leads"])
@@ -396,6 +399,79 @@ def delete_lead(
     lead.soft_delete()
     db.commit()
     # 204 No Content — no response body needed
+
+
+@router.patch(
+    "/{lead_id}/priority",
+    response_model=LeadResponse,
+    summary="Manually assign a priority to an UNASSIGNED lead (Sales + Admin)",
+    responses={
+        400: {"description": "Lead already has a priority — only UNASSIGNED leads can be manually set."},
+        401: {"description": "Missing or invalid JWT token."},
+        403: {"description": "Insufficient permissions (requires Sales or Admin role)."},
+        404: {"description": "Lead not found."},
+    },
+)
+def set_lead_priority(
+    lead_id: uuid.UUID,
+    payload: LeadPriorityUpdateRequest,
+    db: Session = Depends(get_db),
+    claims: dict = Depends(allow_sales_or_admin),
+):
+    """
+    Lets a Sales rep (or Admin) manually resolve a lead the AI could not
+    confidently prioritize — i.e. one the confidence-gate guardrail escalated
+    with priority still UNASSIGNED (see docs/FAILURE_HANDLING.md).
+
+    Deliberately scoped to UNASSIGNED leads only: this is a human filling in a
+    gap the AI left open, NOT a way to overrule a real AI/rule-engine decision
+    (that would undermine the audit trail's guarantee that HIGH/MEDIUM/LOW/SPAM
+    always reflect the agent's actual reasoning).
+
+    If the workflow was ESCALATED, resolving it here moves it to COMPLETED —
+    a human just made the routing decision the agent couldn't.
+    """
+    lead = db.query(Lead).filter(Lead.id == lead_id, Lead.is_deleted == False).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail=f"Lead not found: {lead_id}")
+
+    if lead.priority != LeadPriority.UNASSIGNED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Lead already has priority '{lead.priority.value}' — only UNASSIGNED leads "
+                   "can be manually prioritized.",
+        )
+
+    previous_priority = lead.priority.value
+    lead.priority = LeadPriority(payload.priority)
+
+    wf_state = db.query(WorkflowState).filter(WorkflowState.lead_id == lead_id).first()
+    if wf_state and wf_state.current_status == WorkflowStatus.ESCALATED:
+        wf_state.current_status = WorkflowStatus.COMPLETED
+
+    db.add(AuditLog(
+        lead_id=lead.id,
+        action_type=AuditActionType.MANUAL_OVERRIDE,
+        tool_inputs={"requested_priority": payload.priority},
+        tool_outputs={"priority": payload.priority, "previous_priority": previous_priority},
+        llm_reasoning={
+            "message": f"Priority manually set to {payload.priority} by '{claims['sub']}' "
+                       f"(was {previous_priority}).",
+            "set_by": claims["sub"],
+        },
+    ))
+    db.commit()
+    db.refresh(lead)
+
+    return LeadResponse(
+        id=lead.id,
+        email=lead.email,
+        first_name=lead.first_name,
+        last_name=lead.last_name,
+        company=lead.company,
+        priority=lead.priority.value,
+        created_at=lead.created_at,
+    )
 
 
 @router.get(

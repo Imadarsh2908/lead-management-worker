@@ -24,8 +24,9 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from app.core.logging_config import setup_logging
-from app.core.database import create_all_tables
-from app.api.v1 import auth, leads
+from app.core.database import create_all_tables, SessionLocal
+from app.core.seed import seed_demo_users
+from app.api.v1 import auth, leads, users
 
 
 # ─────────────────────────────────────────────────────────────
@@ -57,6 +58,12 @@ async def lifespan(app: FastAPI):
     if settings.ENVIRONMENT != "testing":
         create_all_tables()
         logger.info("Database tables verified/created.")
+
+        db = SessionLocal()
+        try:
+            seed_demo_users(db)
+        finally:
+            db.close()
     else:
         logger.info("Running in testing environment - skipping database table creation.")
 
@@ -136,6 +143,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 app.include_router(auth.router)
 app.include_router(leads.router)
+app.include_router(users.router)
 
 
 # ─────────────────────────────────────────────────────────────

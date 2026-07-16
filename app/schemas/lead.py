@@ -25,7 +25,7 @@ from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
 class LeadCreateRequest(BaseModel):
     """Validated payload for creating a new lead via POST /v1/leads/"""
-    
+
     email: EmailStr = Field(
         ...,   # Required field
         description="Primary contact email. Must be a valid email format.",
@@ -40,6 +40,13 @@ class LeadCreateRequest(BaseModel):
         default=0.0,
         ge=0.0,   # Must be >= 0
         description="Estimated deal budget in USD. Used for priority scoring.",
+    )
+
+
+class LeadPriorityUpdateRequest(BaseModel):
+    """Payload for PATCH /v1/leads/{id}/priority — manually assign a priority."""
+    priority: Literal["HIGH", "MEDIUM", "LOW"] = Field(
+        ..., description="The priority to assign. Only valid on a currently UNASSIGNED lead."
     )
 
 
