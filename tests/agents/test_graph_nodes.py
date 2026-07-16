@@ -249,6 +249,7 @@ def test_node_lead_score_fallback_escalates():
         res = node_lead_score(state)
 
     assert res["confidence"] == 0.50
+    assert res["priority"] == "MEDIUM"
     # Low confidence trips the rule engine's LowConfidenceRule → forced escalate.
     assert res["next_action"] == "ESCALATE"
     # And the downstream router escalates on the 0.50 confidence gate too.
@@ -257,6 +258,37 @@ def test_node_lead_score_fallback_escalates():
         confidence=res["confidence"], next_action=res["next_action"],
     ))
     assert routed == "escalate"
+
+
+def test_node_lead_score_fallback_preserves_high_priority():
+    """
+    REGRESSION: rules_fallback's internally-computed priority must survive even
+    though confidence is hardcoded to 0.50 (which always fails the guardrail's
+    confidence gate). Previously, the guardrail's own halted-pass default
+    ("UNASSIGNED") shared _PRIORITY_RANK's numeric rank with MEDIUM, so it
+    silently erased any fallback-computed HIGH down to UNASSIGNED — while a
+    fallback-computed MEDIUM survived unchanged (see the test above), masking
+    the bug. The lead must still ESCALATE (a human reviews a low-confidence
+    result), but the STORED priority must reflect what was actually computed.
+    """
+    from app.agents.llm_scorer import ScoringResult
+
+    fallback = ScoringResult(
+        priority="HIGH", confidence=0.50, next_action="notify",
+        reasoning=["Rule-based fallback (llm down); budget exceeds threshold."],
+        source="rules_fallback",
+    )
+    state = AgentState(
+        lead_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        memory={"email": "user@bigcorp.com", "budget": 750000.0, "job_title": "VP of Sales"},
+    )
+    with patch("app.agents.graph.score_lead", return_value=fallback):
+        res = node_lead_score(state)
+
+    assert res["priority"] == "HIGH"          # must NOT be erased to UNASSIGNED
+    assert res["confidence"] == 0.50
+    assert res["next_action"] == "ESCALATE"   # still routes to a human — confidence gate still applies
 
 
 def test_node_decision():

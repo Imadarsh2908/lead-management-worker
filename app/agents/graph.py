@@ -292,7 +292,17 @@ def node_lead_score(state: AgentState) -> dict:
     final_confidence = llm_result.confidence
 
     # GUARDRAIL A: rules may DOWNGRADE priority (stricter), never upgrade it.
-    if _priority_rank(rules.priority) < _priority_rank(final_priority):
+    # rules.priority == "UNASSIGNED" means a guardrail (missing email / low
+    # confidence) halted BEFORE any routing rule ran — it is "no classification
+    # was computed", not "a stricter real classification". It must never
+    # override an already-computed real priority (SPAM/LOW/MEDIUM/HIGH):
+    # UNASSIGNED shares _PRIORITY_RANK's numeric rank with MEDIUM, so without
+    # this guard, a genuinely-computed HIGH would get silently erased to
+    # UNASSIGNED any time this guardrail pass halts (e.g. every LLM-outage
+    # rules_fallback, which always stamps confidence=0.50) — the escalation
+    # itself (GUARDRAIL B below) still happens regardless; only the STORED
+    # priority was being wrongly discarded.
+    if rules.priority != "UNASSIGNED" and _priority_rank(rules.priority) < _priority_rank(final_priority):
         overrides.append(_audit(
             state, "GUARDRAIL_OVERRIDE",
             f"Priority downgraded by rule engine: {final_priority} → {rules.priority}",
